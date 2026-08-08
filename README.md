@@ -513,3 +513,5 @@ docs/             tutorial, vocabulary reference, performance, editor setup
 Every example must parse, type-check, compile, and produce its expected
 output: `internal/parser/examples_test.go` and `internal/build/build_test.go`
 enforce it, so a change that breaks a realistic program fails the build.
+
+Huh, what do you know? Code.
