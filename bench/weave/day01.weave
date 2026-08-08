@@ -1,0 +1,15 @@
+# AoC 2024 day 1: total distance between two sorted columns, then a similarity
+# score weighting each left id by how often it appears on the right.
+rows is Source | lines | sift (l : gt 0 (len l)) | bend earths
+
+left is rows | bend (r : r | first | otherwise 0) | sort
+
+right is rows | bend (r : r | drop 1 | first | otherwise 0) | sort
+
+part1 is zipwith (a b : abs (sub a b)) left right | sum
+
+counts is right | freq
+
+part2 is left | bend (a : mul a (get counts a | otherwise 0)) | sum
+
+[part1, part2] | bend air | join "\n"

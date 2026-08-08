@@ -1,0 +1,9 @@
+# Count the '#' cells of a pattern that have at least two '#' neighbours.
+busy g k is
+  ward cell g k
+    Held '#' : gte 2 (count (eq '#') (nb4 g k))
+    _ : Shadow
+
+sheet is Source through pattern
+
+sheet through knots where busy sheet through len

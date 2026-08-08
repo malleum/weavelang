@@ -1,0 +1,7 @@
+# Building a map inside a loop: the case in-place updating is for.
+fill 0 w is len w
+fill n w is fill (sub n 1) (put w (mod (mul n 2654435761) 1000003) n)
+
+n is Source | strip | earth | otherwise 0
+
+fill n (web [])

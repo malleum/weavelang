@@ -1,0 +1,12 @@
+# Advent of Code 2020, day 1: seek the two entries that sum to 2020 and
+# multiply them.
+nums is Source through lines as earth as otherwise 0
+
+part1 is
+  weave hit is
+    nums through seek (a gives nums through any (b gives eq 2020 (add a b)))
+  ward hit
+    Held a : mul a (sub 2020 a)
+    Stilled : 0
+
+part1

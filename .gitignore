@@ -1,0 +1,6 @@
+/bin/
+/result
+/result-*
+*.out
+bench/build/
+bench/input/text.txt

@@ -1,0 +1,7 @@
+# Sum every Earth in the input, one per line.
+#
+# `earth` yields `Held n` or `Stilled`, so `otherwise 0` supplies a
+# default for lines that do not hold a number. There is no null to forget.
+nums is Source through lines as earth as otherwise 0
+
+nums through sum

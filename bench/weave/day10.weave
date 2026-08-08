@@ -1,0 +1,21 @@
+# AoC 2024 day 10: trailhead scores and ratings over a height map. A trail
+# climbs by exactly one at each step; a score counts the summits reachable and
+# a rating counts the distinct routes to them.
+sheet is Source as pattern
+
+height k is cell sheet k | otherwise '.' | ord | sub _ 48
+
+up k is around4 sheet k | sift (n : eq (add (height k) 1) (height n))
+
+reach k is
+  pick (eq 9 (height k))
+    (circle [k])
+    (up k | bend reach | braid union (circle []))
+
+rating k is pick (eq 9 (height k)) 1 (up k | bend rating | sum)
+
+heads is sheet | knots | sift (k : eq 0 (height k))
+
+[heads | bend (k : len (reach k)) | sum, heads | bend rating | sum]
+  | bend air
+  | join "\n"

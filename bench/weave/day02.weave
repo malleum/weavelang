@@ -1,0 +1,17 @@
+# AoC 2024 day 2: how many reports are safe, and how many become safe when one
+# level is removed.
+reports is Source | lines | sift (l : gt 0 (len l)) | bend earths
+
+steps r is zipwith (a b : sub b a) r (r | drop 1)
+
+safe r is
+  weave d is steps r
+  or
+    (d | all (x : and (gte 1 x) (lte 3 x)))
+    (d | all (x : and (gte (neg 3) x) (lte (neg 1) x)))
+
+without i r is flat [take i r, drop (add i 1) r]
+
+damped r is or (safe r) (span 0 (sub (len r) 1) | any (i : safe (without i r)))
+
+[reports | count safe, reports | count damped] | bend air | join "\n"

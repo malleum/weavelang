@@ -1,0 +1,42 @@
+# AoC 2024 day 22: pseudorandom buyer secrets, then the four-change sequence
+# that sells for the most bananas across every buyer.
+#
+# Part 1 is pure integer work — 4 million rounds of shift, xor and mask. Part 2
+# adds 4 million map insertions on top, which is what makes this the most
+# expensive of the four days here.
+next s is
+  weave a is mod (bxor s (mul s 64)) 16777216
+  weave b is mod (bxor a (div a 32)) 16777216
+  mod (bxor b (mul b 2048)) 16777216
+
+nth 0 s is s
+nth k s is nth (sub k 1) (next s)
+
+buyers is Source | earths
+
+part1 is buyers | bend (s : nth 2000 s) | sum
+
+# The first price offered for each four-change sequence, for one buyer. Fed in
+# reverse so that the earliest occurrence is the one written last, and so wins.
+#
+# Both folds below update the Web they are accumulating, which the compiler
+# writes through rather than path-copying — see SPEC.md section 13.
+
+offers s is
+  weave p is flow next s | take 2001 | bend (x : mod x 10)
+  weave d is zipwith (a b : sub b a) p (drop 1 p)
+  weave hi is zipwith (a b : add (mul (add a 9) 19) (add b 9)) d (drop 1 d)
+  weave lo is zipwith (a b : add (mul (add a 9) 19) (add b 9)) (drop 2 d) (drop 3 d)
+  weave k is zipwith (a b : add (mul a 361) b) hi lo | rev
+  weave v is drop 4 p | rev
+  zip k v | braid (w (key, price) : put w key price) (web [])
+
+# Add one buyer's offers into the running totals.
+totals is buyers
+  | bend offers
+  | braid (t o : items o | braid (u (k, v) : put u k (add v (get u k | otherwise 0))) t)
+      (web [])
+
+part2 is vals totals | braid (a b : max a b) 0
+
+[part1, part2] | bend air | join "\n"

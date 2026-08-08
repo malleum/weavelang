@@ -1,0 +1,24 @@
+# AoC 2024 day 11: how many stones after blinking 25 and then 75 times.
+#
+# The stones never interact, so the answer is a sum over each starting stone
+# independently — and the same (stone, blinks) question comes up over and over,
+# which is exactly what `remember` is for. Without it this is 2^75 work.
+digits n is pick (gt 9 n) (add 1 (digits (div n 10))) 1
+
+pow10 0 is 1
+pow10 k is mul 10 (pow10 (sub k 1))
+
+remember stones s 0 is 1
+stones 0 n is stones 1 (sub n 1)
+stones s n is
+  weave d is digits s
+  weave half is pow10 (div d 2)
+  pick (even d)
+    (add (stones (div s half) (sub n 1)) (stones (mod s half) (sub n 1)))
+    (stones (mul s 2024) (sub n 1))
+
+start is Source | earths
+
+[start | bend (s : stones s 25) | sum, start | bend (s : stones s 75) | sum]
+  | bend air
+  | join "\n"

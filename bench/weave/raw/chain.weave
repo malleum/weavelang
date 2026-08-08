@@ -1,0 +1,9 @@
+# A fused pipeline: one loop, no intermediate Thread, no allocation.
+#
+# The `mod` is not decoration. Summing the squares up to twenty million
+# overflows an int64, and the first version of this benchmark did exactly that
+# — both languages wrapped identically, so the harness compared two wrong
+# answers and agreed. `weave build -overflow` is what found it.
+n is Source | strip | earth | otherwise 0
+
+span 1 n | bend (x : mod (mul x x) 1000003) | sift even | sum

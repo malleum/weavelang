@@ -1,0 +1,7 @@
+# Tail recursion, which compiles to a jump.
+count 0 acc is acc
+count n acc is count (sub n 1) (add acc (mod n 7))
+
+n is Source | strip | earth | otherwise 0
+
+count n 0

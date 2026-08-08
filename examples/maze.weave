@@ -1,0 +1,22 @@
+# Shortest path through a maze, the shape a great many Advent of Code days take.
+#
+# `dijkstra` wants one thing: a function from a place to the (cost, place)
+# steps leading out of it. Everything else — the frontier, the visited set, the
+# order things come off — is its business, and what comes back is the cost of
+# reaching every square the walker could get to, so a second question about the
+# same maze costs nothing.
+sheet is Source through pattern
+
+cellAt k is cell sheet k else '#'
+
+isOpen k is neq '#' (cellAt k)
+
+findMark m is
+  sheet through knots through seek (k gives eq m (cellAt k)) else knot 0 0
+
+# Every open neighbour is one step away.
+steps k is around4 sheet k where isOpen as (1, this)
+
+reachable is dijkstra steps (findMark 'S')
+
+get reachable (findMark 'E') else neg 1

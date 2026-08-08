@@ -1,0 +1,30 @@
+# Advent of Code 2020 day 8: a handheld console that runs a tiny program and
+# never terminates. Report the accumulator just before an instruction repeats.
+#
+# The instruction set is a declared sum type, which is what makes this pleasant:
+# `advance` cannot forget an opcode, and adding a fourth one to the declaration
+# turns every match on it into an error until that case is handled too.
+Op is Nop Earth | Acc Earth | Jmp Earth
+
+arg line is line through earths through first else 0
+
+read line is
+  ward line through words through first else ""
+    "acc" : Acc (arg line)
+    "jmp" : Jmp (arg line)
+    _ : Nop (arg line)
+
+program is Source through lines where (l gives gt 0 (len l)) as read
+
+at n is program through drop n through first
+
+step pc acc seen is pick (member seen pc) acc (advance pc acc (insert seen pc))
+
+advance pc acc seen is
+  ward at pc
+    Stilled : acc
+    Held (Nop _) : step (add pc 1) acc seen
+    Held (Acc n) : step (add pc 1) (add acc n) seen
+    Held (Jmp n) : step (add pc n) acc seen
+
+step 0 0 (circle [])

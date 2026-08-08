@@ -1,0 +1,9 @@
+# Branch-heavy integer work, and a mutually tail-recursive pair.
+step n is pick (even n) (div n 2) (add 1 (mul 3 n))
+
+len2 1 acc is acc
+len2 n acc is len2 (step n) (add acc 1)
+
+n is Source | strip | earth | otherwise 0
+
+span 1 n | bend (s : len2 s 0) | braid (a b : max a b) 0

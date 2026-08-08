@@ -1,0 +1,142 @@
+================================================================================
+A sum type on one line
+================================================================================
+
+Direction is North | South | East | West
+
+North
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_declaration
+    name: (constructor)
+    (constructor_declaration name: (constructor))
+    (constructor_declaration name: (constructor))
+    (constructor_declaration name: (constructor))
+    (constructor_declaration name: (constructor)))
+  (output
+    (constructor)))
+
+================================================================================
+A parameterised, recursive sum type
+================================================================================
+
+Tree a is Leaf | Node (Tree a) a (Tree a)
+
+Leaf
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_declaration
+    name: (constructor)
+    parameters: (identifier)
+    (constructor_declaration name: (constructor))
+    (constructor_declaration
+      name: (constructor)
+      fields: (type_application
+        constructor: (type_name)
+        (identifier))
+      fields: (identifier)
+      fields: (type_application
+        constructor: (type_name)
+        (identifier))))
+  (output
+    (constructor)))
+
+================================================================================
+A sum type wrapped over several lines
+================================================================================
+
+Shape is
+  Circle Water
+  | Rect Water Water
+
+Circle 1.0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_declaration
+    name: (constructor)
+    (constructor_declaration
+      name: (constructor)
+      fields: (type_name))
+    (constructor_declaration
+      name: (constructor)
+      fields: (type_name)
+      fields: (type_name)))
+  (output
+    (application
+      function: (constructor)
+      arguments: (float))))
+
+================================================================================
+A signature
+================================================================================
+
+total :: Thread Earth -> Earth
+total xs is sum xs
+
+total []
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (signature
+    name: (identifier)
+    type: (function_type
+      (type_application
+        constructor: (type_name)
+        (type_name))
+      (type_name)))
+  (definition
+    name: (identifier)
+    parameters: (identifier)
+    body: (application
+      function: (identifier)
+      arguments: (identifier)))
+  (output
+    (application
+      function: (identifier)
+      arguments: (thread))))
+
+================================================================================
+Multi-clause definitions with destructuring
+================================================================================
+
+total Leaf is 0
+total (Node l v r) is add v (add (total l) (total r))
+
+total Leaf
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    parameters: (constructor)
+    body: (integer))
+  (definition
+    name: (identifier)
+    parameters: (constructor_pattern
+      name: (constructor)
+      fields: (identifier)
+      fields: (identifier)
+      fields: (identifier))
+    body: (application
+      function: (identifier)
+      arguments: (identifier)
+      arguments: (application
+        function: (identifier)
+        arguments: (application
+          function: (identifier)
+          arguments: (identifier))
+        arguments: (application
+          function: (identifier)
+          arguments: (identifier)))))
+  (output
+    (application
+      function: (identifier)
+      arguments: (constructor))))

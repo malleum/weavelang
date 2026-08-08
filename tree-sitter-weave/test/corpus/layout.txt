@@ -1,0 +1,198 @@
+================================================================================
+A value and an output expression
+================================================================================
+
+answer is 42
+
+answer
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (integer))
+  (output
+    (identifier)))
+
+================================================================================
+A block opens after `is`
+================================================================================
+
+total is
+  weave n is 10
+  add n 1
+
+total
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (local_binding
+      name: (identifier)
+      value: (integer))
+    body: (application
+      function: (identifier)
+      arguments: (identifier)
+      arguments: (integer)))
+  (output
+    (identifier)))
+
+================================================================================
+A deeper line without a block continues the one above
+================================================================================
+
+answer is
+  pick Light
+    1
+    2
+
+answer
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (application
+      function: (identifier)
+      arguments: (constructor)
+      arguments: (integer)
+      arguments: (integer)))
+  (output
+    (identifier)))
+
+================================================================================
+A pipeline broken across lines
+================================================================================
+
+nums is
+  Source
+    | lines
+    | bend (parse Earth)
+    where holds
+
+nums
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (pipeline
+      (pipeline
+        (pipeline
+          (constructor)
+          (identifier))
+        (application
+          function: (identifier)
+          arguments: (application
+            function: (identifier)
+            arguments: (constructor))))
+      (identifier)))
+  (output
+    (identifier)))
+
+================================================================================
+Ward arms, nested
+================================================================================
+
+name x is
+  ward x
+    Held n :
+      ward n
+        0 : "zero"
+        _ : "some"
+    Stilled : "none"
+
+name Stilled
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    parameters: (identifier)
+    body: (ward
+      subject: (identifier)
+      (ward_arm
+        pattern: (constructor_pattern
+          name: (constructor)
+          fields: (identifier))
+        body: (ward
+          subject: (identifier)
+          (ward_arm
+            pattern: (integer)
+            body: (text))
+          (ward_arm
+            pattern: (wildcard)
+            body: (text))))
+      (ward_arm
+        pattern: (constructor)
+        body: (text))))
+  (output
+    (application
+      function: (identifier)
+      arguments: (constructor))))
+
+================================================================================
+Comments carry no layout meaning
+================================================================================
+
+# leading
+
+# another
+answer is
+  # inside
+  1
+
+answer
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (comment)
+  (definition
+    name: (identifier)
+    (comment)
+    body: (integer))
+  (output
+    (identifier)))
+
+================================================================================
+`gives` opens a block the way `:` does
+================================================================================
+
+describe h is
+  ward h
+    Held n gives n
+    Stilled gives 0
+
+describe (first [1])
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    (identifier)
+    (identifier)
+    (ward
+      (identifier)
+      (ward_arm
+        (constructor_pattern
+          (constructor)
+          (identifier))
+        (identifier))
+      (ward_arm
+        (constructor)
+        (integer))))
+  (output
+    (application
+      (identifier)
+      (application
+        (identifier)
+        (thread
+          (integer))))))

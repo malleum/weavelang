@@ -1,0 +1,5 @@
+# Build output. src/parser.c is committed on purpose: it is what an editor
+# compiles, and committing it means no tree-sitter CLI is needed to install.
+node_modules/
+build/
+*.wasm

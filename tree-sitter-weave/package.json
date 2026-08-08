@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-weave",
+  "version": "0.1.0",
+  "description": "Weave grammar for tree-sitter",
+  "license": "MIT",
+  "main": "bindings/node",
+  "keywords": ["parser", "weave"],
+  "files": [
+    "grammar.js",
+    "queries/*",
+    "src/**"
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.weave",
+      "file-types": ["weave"],
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm"
+    }
+  ]
+}

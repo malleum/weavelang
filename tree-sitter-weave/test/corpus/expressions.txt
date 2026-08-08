@@ -1,0 +1,211 @@
+================================================================================
+A pipeline
+================================================================================
+
+[1 2 3] | sift even | sum
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (output
+    (pipeline
+      (pipeline
+        (thread (integer) (integer) (integer))
+        (application
+          function: (identifier)
+          arguments: (identifier)))
+      (identifier))))
+
+================================================================================
+A lambda, a twine and a group
+================================================================================
+
+f is bend (x : add x 1) [(1, 2)]
+
+f
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (application
+      function: (identifier)
+      arguments: (lambda
+        parameters: (identifier)
+        body: (application
+          function: (identifier)
+          arguments: (identifier)
+          arguments: (integer)))
+      arguments: (thread
+        (twine (integer) (integer)))))
+  (output
+    (identifier)))
+
+================================================================================
+A hole in brackets and in a pipeline stage
+================================================================================
+
+evens is xs where (mod _ 2 | eq 0)
+
+got is w | get _ "a"
+
+(evens, got)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (pipeline
+      (identifier)
+      (pipeline
+        (application
+          function: (identifier)
+          arguments: (hole)
+          arguments: (integer))
+        (application
+          function: (identifier)
+          arguments: (integer)))))
+  (definition
+    name: (identifier)
+    body: (pipeline
+      (identifier)
+      (application
+        function: (identifier)
+        arguments: (hole)
+        arguments: (text))))
+  (output
+    (twine (identifier) (identifier))))
+
+================================================================================
+A Web literal
+================================================================================
+
+w is {"a" : 1  "b" : 2}
+
+w
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (web
+      (web_pair key: (text) value: (integer))
+      (web_pair key: (text) value: (integer))))
+  (output
+    (identifier)))
+
+================================================================================
+An inline let
+================================================================================
+
+answer is weave x is 1, y is 2 into add x y
+
+answer
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (inline_let
+      (inline_binding name: (identifier) value: (integer))
+      (inline_binding name: (identifier) value: (integer))
+      (application
+        function: (identifier)
+        arguments: (identifier)
+        arguments: (identifier))))
+  (output
+    (identifier)))
+
+================================================================================
+Literals
+================================================================================
+
+nums is [1 2.5 'x' "text"]
+
+nums
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (thread
+      (integer)
+      (float)
+      (character)
+      (text)))
+  (output
+    (identifier)))
+
+================================================================================
+Thread patterns, with a rest
+================================================================================
+
+total [] is 0
+total [x ..rest] is add x (total rest)
+
+total [1 2]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    parameters: (thread_pattern)
+    body: (integer))
+  (definition
+    name: (identifier)
+    parameters: (thread_pattern
+      (identifier)
+      (rest_pattern
+        (identifier)))
+    body: (application
+      function: (identifier)
+      arguments: (identifier)
+      arguments: (application
+        function: (identifier)
+        arguments: (identifier))))
+  (output
+    (application
+      function: (identifier)
+      arguments: (thread
+        (integer)
+        (integer)))))
+
+================================================================================
+`former`, `latter` and `that`, the words a hole is spelled with
+================================================================================
+
+sums is pairs | bend (add former latter)
+
+(sums, [1 2] | braid (add this that) 0)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (pipeline
+      (identifier)
+      (application
+        function: (identifier)
+        arguments: (application
+          function: (identifier)
+          arguments: (hole)
+          arguments: (hole)))))
+  (output
+    (twine
+      (identifier)
+      (pipeline
+        (thread (integer) (integer))
+        (application
+          function: (identifier)
+          arguments: (application
+            function: (identifier)
+            arguments: (hole)
+            arguments: (hole))
+          arguments: (integer))))))

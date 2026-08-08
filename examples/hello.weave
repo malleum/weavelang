@@ -1,0 +1,7 @@
+# The Wheel weaves as the Wheel wills.
+#
+# A Weave program is a set of definitions followed by one bare expression.
+# That final expression is the program's output.
+greeting is "the Wheel weaves as the Wheel wills"
+
+greeting

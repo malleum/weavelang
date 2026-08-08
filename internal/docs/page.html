@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — the reference</title>
+<style>
+  /* One file, nothing fetched. The type is whatever the reader already has,
+     picked in the order a machine is likely to have it. */
+  :root {
+    --ink: #1c1a17;
+    --faint: #6b6560;
+    --fainter: #9a938c;
+    --rule: #e2ddd6;
+    --page: #fbf9f6;
+    --card: #ffffff;
+    --accent: #7a4f22;
+    --accent-soft: #f2e9de;
+    --type: #2f5d50;
+    --var: #8a5a3b;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --text: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e8e2da;
+      --faint: #a49c93;
+      --fainter: #6f675f;
+      --rule: #2e2a26;
+      --page: #161412;
+      --card: #1d1a17;
+      --accent: #d2a06a;
+      --accent-soft: #2a231b;
+      --type: #86c0ad;
+      --var: #d3a385;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 5.5rem; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--text);
+    font-size: 16.5px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ------------------------------------------------------------- masthead */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    /* Opaque first, so a browser without color-mix still hides what scrolls
+       under it. The blur is the nicety, not the mechanism. */
+    background: var(--page);
+    background: color-mix(in srgb, var(--page) 92%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--rule);
+  }
+  .bar {
+    max-width: 1180px; margin: 0 auto;
+    display: flex; align-items: baseline; gap: 1.25rem;
+    padding: 0.85rem 1.5rem;
+  }
+  .wordmark {
+    font-size: 1.35rem; letter-spacing: 0.02em; font-weight: 600;
+    color: var(--ink); text-decoration: none; white-space: nowrap;
+  }
+  .wordmark span { color: var(--accent); }
+  .tag { color: var(--faint); font-size: 0.85rem; white-space: nowrap; }
+  .grow { flex: 1; }
+  #q {
+    font-family: var(--mono); font-size: 0.86rem;
+    padding: 0.5rem 0.8rem;
+    width: 20rem; max-width: 42vw;
+    border: 1px solid var(--rule); border-radius: 7px;
+    background: var(--card); color: var(--ink);
+    outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  #q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  #q::placeholder { color: var(--fainter); }
+  .hits { font-family: var(--mono); font-size: 0.75rem; color: var(--fainter); min-width: 5.5rem; }
+
+  /* ---------------------------------------------------------------- shell */
+  .shell { max-width: 1180px; margin: 0 auto; display: flex; gap: 2.5rem; padding: 0 1.5rem; }
+  nav {
+    position: sticky; top: 4.2rem; align-self: flex-start;
+    width: 12.5rem; flex: none;
+    padding: 2rem 0; max-height: calc(100vh - 5rem); overflow-y: auto;
+    font-size: 0.83rem;
+  }
+  nav h4 {
+    margin: 1.4rem 0 0.45rem; font-family: var(--mono);
+    font-size: 0.66rem; letter-spacing: 0.13em; text-transform: uppercase;
+    color: var(--fainter); font-weight: 600;
+  }
+  nav h4:first-child { margin-top: 0; }
+  nav a {
+    display: flex; justify-content: space-between; gap: 0.5rem;
+    padding: 0.16rem 0; color: var(--faint); text-decoration: none;
+  }
+  nav a:hover { color: var(--accent); }
+  nav a .n { font-family: var(--mono); font-size: 0.72rem; color: var(--fainter); }
+  main { flex: 1; min-width: 0; padding: 2rem 0 6rem; }
+
+  /* ------------------------------------------------------------- opening */
+  .opening { margin-bottom: 3rem; max-width: 40rem; }
+  .opening h1 { font-size: 2.1rem; margin: 0 0 0.6rem; font-weight: 600; letter-spacing: -0.01em; }
+  .opening p { color: var(--faint); margin: 0 0 0.8rem; }
+  .opening code { font-family: var(--mono); font-size: 0.85em; color: var(--accent); }
+
+  /* -------------------------------------------------------------- groups */
+  section { margin-bottom: 3.2rem; }
+  section > h2 {
+    font-size: 0.72rem; font-family: var(--mono); font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent);
+    margin: 0 0 0.15rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--rule);
+  }
+  section > .note { color: var(--fainter); font-size: 0.86rem; margin: 0.55rem 0 1.1rem; }
+
+  .card {
+    padding: 0.85rem 0;
+    border-bottom: 1px solid var(--rule);
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.22rem;
+    scroll-margin-top: 5.5rem;
+  }
+  .card:last-child { border-bottom: none; }
+  .sig { font-family: var(--mono); font-size: 0.855rem; line-height: 1.5; word-break: break-word; }
+  .sig .nm { color: var(--ink); font-weight: 600; }
+  .sig .t { color: var(--type); }
+  .sig .v { color: var(--var); font-style: italic; }
+  .sig .a { color: var(--fainter); }
+  .sig .w { color: var(--fainter); }
+  .doc { color: var(--ink); font-size: 0.95rem; }
+  .gloss { color: var(--faint); font-size: 0.9rem; }
+  .gloss code, .doc code {
+    font-family: var(--mono); font-size: 0.85em;
+    background: var(--accent-soft); padding: 0.06em 0.32em; border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* --------------------------------------------------------------- shapes */
+  .shape { padding: 1rem 0; border-bottom: 1px solid var(--rule); scroll-margin-top: 5.5rem; }
+  .shape:last-child { border-bottom: none; }
+  .shape .sig .nm { font-size: 1.02rem; }
+  .ctors { margin-top: 0.5rem; padding-left: 0.9rem; border-left: 2px solid var(--rule); }
+  .ctor { font-family: var(--mono); font-size: 0.8rem; color: var(--faint); padding: 0.1rem 0; }
+  .ctor b { color: var(--ink); font-weight: 600; }
+  .ctor i { font-family: var(--text); font-style: normal; color: var(--fainter); font-size: 0.95rem; }
+
+  .empty { color: var(--fainter); font-style: italic; padding: 3rem 0; display: none; }
+  body.nothing .empty { display: block; }
+  body.nothing section { display: none; }
+
+  footer {
+    max-width: 1180px; margin: 0 auto; padding: 2rem 1.5rem 4rem;
+    border-top: 1px solid var(--rule);
+    color: var(--fainter); font-size: 0.82rem;
+  }
+  footer code { font-family: var(--mono); }
+
+  @media (max-width: 860px) {
+    nav { display: none; }
+    .shell { padding: 0 1.1rem; }
+    #q { width: 100%; }
+    .tag { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <a class="wordmark" href="#top">weave<span>.</span></a>
+    <span class="tag">{{.Count}} verbs, and the words that are not verbs</span>
+    <span class="grow"></span>
+    <input id="q" type="search" placeholder="search  —  press /" autocomplete="off" spellcheck="false">
+    <span class="hits" id="hits"></span>
+  </div>
+</header>
+
+<div class="shell">
+  <nav>
+    <h4>Shapes</h4>
+    <a href="#shapes">the types <span class="n">{{len .Shapes}}</span></a>
+    <a href="#talents">talents <span class="n">{{len .Talent}}</span></a>
+    <a href="#words">words <span class="n">{{len .Words}}</span></a>
+    <h4>Verbs</h4>
+    {{range .Groups}}<a href="#{{.Slug}}">{{.Name}} <span class="n">{{len .Verbs}}</span></a>
+    {{end}}
+  </nav>
+
+  <main id="top">
+    <div class="opening">
+      <h1>The reference</h1>
+      <p>Every name the compiler already knows, with the type it has. Search
+      matches the name, the signature and both descriptions at once.</p>
+      <p>Nothing here is compared to anything outside the language. A verb is
+      explained by other verbs, a type by other types. If that is no use to
+      you, the tutorial is the door you wanted; this is the shelf.</p>
+    </div>
+
+    <p class="empty">Nothing answers to that.</p>
+
+    <section id="shapes" data-kind="shape">
+      <h2>Shapes</h2>
+      <p class="note">What a value can be. Five of them are Powers, and the rest are woven out of them.</p>
+      {{range .Shapes}}
+      <div class="shape" data-s="{{.Search}}" id="type-{{.Name}}">
+        <div class="sig"><span class="nm t">{{.Name}}</span>{{if .Kind}} <span class="w">{{.Kind}}</span>{{end}}</div>
+        <div class="gloss">{{prose .Gloss}}</div>
+        {{if .Ctors}}<div class="ctors">
+          {{range .Ctors}}<div class="ctor"><b>{{.Name}}</b> :: {{.Sig}} &nbsp; <i>{{prose .Doc}}</i></div>
+          {{end}}
+        </div>{{end}}
+      </div>
+      {{end}}
+    </section>
+
+    <section id="talents" data-kind="talent">
+      <h2>Talents</h2>
+      <p class="note">What a type is able to do. A signature that says <code>where Ord a</code> is asking for one.</p>
+      {{range .Talent}}
+      <div class="card" data-s="{{.Search}}">
+        <div class="sig"><span class="nm t">{{.Name}}</span></div>
+        <div class="doc">{{prose .Means}}</div>
+        <div class="gloss">{{prose .Gloss}}</div>
+      </div>
+      {{end}}
+    </section>
+
+    <section id="words" data-kind="word">
+      <h2>Words that are not verbs</h2>
+      <p class="note">The lexer reserves these, so none of them can be a name. Each was chosen because it could never be a verb — the rule that had <code>of</code>, <code>at</code> and <code>from</code> cut.</p>
+      {{range .Words}}
+      <div class="card" data-s="{{.Search}}">
+        <div class="sig"><span class="nm">{{.Name}}</span> <span class="w">{{.Section}}</span></div>
+        <div class="doc">{{prose .Means}}</div>
+        <div class="gloss">{{prose .Gloss}}</div>
+      </div>
+      {{end}}
+    </section>
+
+    {{range .Groups}}
+    <section id="{{.Slug}}" data-kind="verb">
+      <h2>{{.Name}}</h2>
+      {{if .Note}}<p class="note">{{.Note}}</p>{{end}}
+      {{range .Verbs}}
+      <div class="card" data-s="{{.Search}}" id="v-{{.Name}}">
+        <div class="sig"><span class="nm">{{.Name}}</span> :: {{sig .Sig}}{{if .Where}} <span class="w">where {{.Where}}</span>{{end}}</div>
+        <div class="doc">{{prose .Doc}}</div>
+        <div class="gloss">{{prose .Gloss}}</div>
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+  </main>
+</div>
+
+<footer>
+  Generated from the compiler's own vocabulary table, so it cannot disagree
+  with the compiler. <code>weave verbs</code> prints the same thing at a
+  terminal; <code>weave docs -o page.html</code> writes this out as a file.
+</footer>
+
+<script>
+// Search is a substring match over one pre-lowered string per card, which for
+// a few hundred cards is faster than anything cleverer and has no surprises in
+// it: what you type is what is looked for.
+(function () {
+  var q = document.getElementById('q');
+  var hits = document.getElementById('hits');
+  var cards = [].slice.call(document.querySelectorAll('[data-s]'));
+  var sections = [].slice.call(document.querySelectorAll('section'));
+
+  function apply() {
+    var needle = q.value.trim().toLowerCase();
+    var shown = 0;
+    for (var i = 0; i < cards.length; i++) {
+      var on = needle === '' || cards[i].dataset.s.indexOf(needle) !== -1;
+      cards[i].style.display = on ? '' : 'none';
+      if (on) shown++;
+    }
+    for (var j = 0; j < sections.length; j++) {
+      var any = sections[j].querySelector('[data-s]:not([style*="none"])');
+      sections[j].style.display = any ? '' : 'none';
+    }
+    document.body.classList.toggle('nothing', shown === 0);
+    hits.textContent = needle === '' ? '' : shown + (shown === 1 ? ' name' : ' names');
+    if (needle === '') history.replaceState(null, '', location.pathname);
+  }
+
+  q.addEventListener('input', apply);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); q.select(); }
+    if (e.key === 'Escape' && document.activeElement === q) { q.value = ''; apply(); q.blur(); }
+  });
+
+  // A fragment naming a verb searches for it, so a link from an editor lands
+  // on the one card rather than somewhere near it.
+  if (location.hash.indexOf('#v-') === 0) {
+    q.value = decodeURIComponent(location.hash.slice(3));
+    apply();
+  }
+})();
+</script>
+</body>
+</html>

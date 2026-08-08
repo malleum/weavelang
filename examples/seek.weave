@@ -1,0 +1,15 @@
+# map | filter | seek, the shape most Advent of Code days take.
+#
+# The whole chain is one lazy pass over the input: no intermediate Thread is
+# ever allocated, and `seek` stops cell the first match.
+answer is
+  Source
+    through lines
+    as earth
+    as otherwise 0
+    as mul 2
+    where gt 10
+    through seek (divBy 3)
+    else 0
+
+answer

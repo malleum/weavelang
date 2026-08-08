@@ -1,0 +1,9 @@
+# Naive recursion: 2.7M calls at n=32. Nothing to optimise, so this measures
+# call overhead and integer arithmetic.
+fib 0 is 0
+fib 1 is 1
+fib n is add (fib (sub n 1)) (fib (sub n 2))
+
+n is Source | strip | earth | otherwise 0
+
+fib n

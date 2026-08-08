@@ -1,0 +1,7 @@
+# Multi-clause definitions match on their arguments, and the compiler checks
+# that the clauses cover every case.
+fib 0 is 0
+fib 1 is 1
+fib n is add (fib (sub n 1)) (fib (sub n 2))
+
+span 0 20 as fib through sum

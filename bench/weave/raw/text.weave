@@ -1,0 +1,4 @@
+# Text: split the input into words and count the long ones.
+[Source | words | count (w : gt 5 (len w)), Source | lines | len]
+  | bend air
+  | join "\n"
