@@ -7,10 +7,25 @@
 // construction — there is no code path that could reproduce them.
 //
 // It has one setting, and it is about spelling rather than layout. Weave gives
-// its punctuation words — `is` for `=`, `gives` for `:`, `through` for `|` —
-// and the words are the language while the symbols are the shorthand, so the
-// words are what it prints. `weave fmt -terse` prints the symbols instead. The
-// two are the same tokens to the lexer, so either can be read back.
+// its punctuation words — `is` for `=`, `gives` for `:`, `through` for `|`,
+// `this` for `_` — and the words are the language while the symbols are the
+// shorthand, so the words are what it prints. `weave fmt -terse` prints the
+// symbols instead. The two are the same tokens to the lexer, so either can be
+// read back.
+//
+// The setting reaches further than spelling one token as another. The
+// formatter *chooses* between forms rather than keeping the one that was
+// written, wherever the choice is not a matter of meaning:
+//
+//   - `sift p` prints as `where p` and `bend f` as `as f` in the wordy style,
+//     and back into verbs in the terse one. A particle desugars to its verb by
+//     name, so the two resolve to the same thing even where the name has been
+//     shadowed — see stage() below.
+//   - A lambda prints as a hole group wherever that reads back as the same
+//     function, so `(x : add x 1)` becomes `(add this 1)`. See holes.go, and
+//     in particular why the check is done by doing it.
+//   - A ward keeps whichever of its two forms was written, for as long as it
+//     fits, because there the choice *is* a matter of taste.
 //
 // Two things survive that a tree alone would lose. Comments are collected by
 // the lexer and reattached by line, and the parser records whether a call was
@@ -85,6 +100,10 @@ type printer struct {
 	holeText map[*ast.Lambda]string
 }
 
+// A ward arm's separator is the same `:` a lambda's is — `gives` spells both —
+// so it follows the same style rather than staying a symbol while everything
+// around it becomes a word.
+//
 // binder is `is` or `=`, gives is `gives` or `:`, and pipe is what a `|` in the
 // source is printed as. The other particles — `where`, `as`, `into` — have no
 // symbol, so they are the same in both.
@@ -263,6 +282,14 @@ func (p *printer) typeDecl(d *ast.TypeDecl) {
 }
 
 func (p *printer) decl(d *ast.Decl) {
+	// A definition that takes its value apart has a name no source can spell,
+	// so what goes before the `is` is the pattern.
+	if d.Pat != nil {
+		for _, cl := range d.Clauses {
+			p.body(cl.Body, patternString(d.Pat, true)+" "+p.binder())
+		}
+		return
+	}
 	if d.Sig != nil {
 		p.line(d.Name + " :: " + typeString(d.Sig))
 	}
@@ -343,15 +370,14 @@ func (p *printer) emitWrapped(one string, e ast.Expr) {
 	}
 	stages := p.pipeline(e)
 	if len(stages) < 2 {
+		if app, ok := e.(*ast.App); ok && app.Via == "" && len(app.Args) > 0 {
+			p.emitCall(app, "", "")
+			return
+		}
 		p.line(one)
 		return
 	}
-	p.line(stages[0].text)
-	p.depth++
-	for _, s := range stages[1:] {
-		p.emitStage(s)
-	}
-	p.depth--
+	p.emitPipe(stages, "", "")
 }
 
 // emitStage writes one stage of a broken pipeline, breaking inside it when the
@@ -360,20 +386,175 @@ func (p *printer) emitWrapped(one string, e ast.Expr) {
 // The arguments go one to a line at a further indent, which is what keeps a
 // continuation from being read as the next stage: a stage begins with a
 // particle and these do not.
-func (p *printer) emitStage(s stageLine) {
-	if s.app == nil || p.fits(s.text) {
-		p.line(s.text)
+func (p *printer) emitStage(s stageLine, close string) {
+	if s.app == nil || p.fits(s.text+close) {
+		p.line(s.text + close)
 		return
 	}
 	verb, args := p.stageParts(s.app)
 	if len(args) == 0 {
-		p.line(s.text)
+		p.line(s.text + close)
 		return
 	}
 	p.line(verb)
 	p.depth++
-	for _, a := range args {
-		p.line(a)
+	for i, a := range args {
+		tail := ""
+		if i == len(args)-1 {
+			tail = close
+		}
+		p.emitArg(s.app.Args[i], a, tail)
+	}
+	p.depth--
+}
+
+// emitCall writes an application that will not fit on one line, at the same
+// seam a pipeline stage is broken at: its arguments.
+//
+// As many arguments as the line will hold stay on it, and the rest go one to a
+// line at a further indent. A deeper line that opens no block continues the one
+// above it, which is exactly what an argument on its own line is, so what comes
+// back reads as the call it was — and reparses as it.
+//
+// `open` and `close` are the brackets an argument being broken inside sits in;
+// at the top level they are empty. They are carried rather than printed by the
+// caller so that the closing bracket lands on the last line written, however
+// deep the breaking went.
+func (p *printer) emitCall(app *ast.App, open, close string) {
+	head := open + p.expr(app.Fn, precArg)
+	texts := make([]string, len(app.Args))
+	for i, a := range app.Args {
+		texts[i] = p.expr(a, precArg)
+	}
+
+	line, used := head, 0
+	for used < len(texts) {
+		trial := line + " " + texts[used]
+		if used == len(texts)-1 {
+			trial += close
+		}
+		if !p.fits(trial) {
+			break
+		}
+		line = line + " " + texts[used]
+		used++
+	}
+	if used == len(texts) {
+		p.line(line + close)
+		return
+	}
+
+	p.line(line)
+	p.depth++
+	for i := used; i < len(texts); i++ {
+		tail := ""
+		if i == len(texts)-1 {
+			tail = close
+		}
+		p.emitArg(app.Args[i], texts[i], tail)
+	}
+	p.depth--
+}
+
+// emitArg writes one argument of a broken call, breaking inside it when the
+// argument is itself too long. `p.expr` has already bracketed whatever needed
+// it, so the brackets are handed on rather than printed, and the closing one
+// lands on the last line however deep the breaking went.
+//
+// Five things can be broken into: an ordinary call, a pipeline, a lambda whose
+// body is either, and the two bracketed literals — a Twine and a Thread, which
+// break one element to a line with the comma leading, so that a line which
+// opens no block continues the one above it. Anything else — a ward, a name — is
+// printed as it stands and may run past the margin, which is the honest outcome
+// when there is no seam.
+func (p *printer) emitArg(e ast.Expr, text, close string) {
+	if p.fits(text + close) {
+		p.line(text + close)
+		return
+	}
+	switch e := e.(type) {
+	case *ast.Lambda:
+		// A lambda a hole word produced — or one the formatter has just
+		// rewritten into that spelling, which renames the body in place — has
+		// no head of its own. It prints as its body inside brackets, and a
+		// Twine literal body brings its own, so the seam is the body's either
+		// way.
+		if isHoleLambda(e) || p.holeSpelling(e) != "" {
+			if p.emitBracketed(e.Body, "(", ")"+close) {
+				return
+			}
+			break
+		}
+		if head, ok := p.lambdaHead(e); ok {
+			p.line(head)
+			p.depth++
+			p.emitArg(e.Body, p.expr(e.Body, precTop), ")"+close)
+			p.depth--
+			return
+		}
+
+	case *ast.ThreadLit:
+		// A Thread of atoms is written space-separated and has no comma to
+		// lead with, so there is nothing to break at.
+		if len(e.Elems) > 1 && !allAtoms(e.Elems) {
+			p.elems(e.Elems, "[", "]"+close)
+			return
+		}
+
+	default:
+		if p.emitBracketed(e, "(", ")"+close) {
+			return
+		}
+	}
+	p.line(text + close)
+}
+
+// emitBracketed writes an expression that will not fit, at whatever seam it
+// has, inside the brackets `p.expr` already put round it. It reports whether it
+// found one.
+func (p *printer) emitBracketed(e ast.Expr, open, close string) bool {
+	if stages := p.pipeline(e); len(stages) >= 2 {
+		p.emitPipe(stages, open, close)
+		return true
+	}
+	switch e := e.(type) {
+	case *ast.App:
+		if e.Via == "" && len(e.Args) > 0 {
+			p.emitCall(e, open, close)
+			return true
+		}
+	case *ast.TwineLit:
+		p.elems(e.Elems, open, close)
+		return true
+	}
+	return false
+}
+
+// lambdaHead is the `(a b gives` a lambda opens with when its body has to go
+// on lines of its own, and whether this lambda has one at all: the ones the
+// hole words spell have no parameters to write.
+func (p *printer) lambdaHead(e *ast.Lambda) (string, bool) {
+	if isHoleLambda(e) || p.holeSpelling(e) != "" {
+		return "", false
+	}
+	params := make([]string, len(e.Params))
+	for i, param := range e.Params {
+		params[i] = patternString(param, true)
+	}
+	return "(" + strings.Join(params, " ") + " " + p.gives(), true
+}
+
+// emitPipe writes a pipeline one stage per line, with the brackets it sits in
+// if it sits in any.
+func (p *printer) emitPipe(stages []stageLine, open, close string) {
+	p.line(open + stages[0].text)
+	p.depth++
+	for i, s := range stages[1:] {
+		tail := ""
+		if i == len(stages)-2 {
+			tail = close
+		}
+		p.emitStage(s, tail)
 	}
 	p.depth--
 }
@@ -398,17 +579,42 @@ func (p *printer) stageParts(app *ast.App) (string, []string) {
 	return p.via(app.Via) + " " + p.expr(app.Fn, precArg), args
 }
 
-// thread writes a Thread literal one element per line, with the comma leading
-// so that the elements line up under the opening bracket.
+// thread writes a Thread literal that will not fit on one line. It is `elems`
+// with nothing round it, since a literal in this position sits at the top of a
+// definition rather than inside a call.
 func (p *printer) thread(lit *ast.ThreadLit) {
-	for i, el := range lit.Elems {
+	p.elems(lit.Elems, "[", "]")
+}
+
+// elems writes a bracketed literal one element to a line, the comma leading so
+// that every line after the first opens no block and continues the one above.
+// `close` carries whatever brackets the literal itself sits inside, so they
+// land on the last line written.
+//
+// An element that will not fit either is broken at the seams a call and a
+// pipeline already have, with the comma standing in for the bracket they would
+// otherwise open with.
+func (p *printer) elems(es []ast.Expr, open, close string) {
+	for i, el := range es {
 		lead := ", "
 		if i == 0 {
-			lead = "[ "
+			lead = open + " "
 		}
-		p.line(lead + p.expr(el, precTop))
+		text := lead + p.expr(el, precTop)
+		stages := p.pipeline(el)
+		app, isCall := el.(*ast.App)
+		switch {
+		case p.fits(text):
+			p.line(text)
+		case len(stages) >= 2:
+			p.emitPipe(stages, lead, "")
+		case isCall && app.Via == "" && len(app.Args) > 0:
+			p.emitCall(app, lead, "")
+		default:
+			p.line(text)
+		}
 	}
-	p.line("]")
+	p.line(close)
 }
 
 // stageLine is one line of a broken pipeline: what to print, and the call it
@@ -419,14 +625,42 @@ type stageLine struct {
 }
 
 // pipeline flattens a chain into the head plus one `| stage` per element.
+//
+// Two of the stages are not calls at all. A piped hole word desugars in the
+// *parser* — `xs | latter` is a match on the pair it opens, `xs | _` is a
+// binding — so a chain ending in one is a Ward or a Let with a chain inside it,
+// and reading those back as stages is what lets such a chain be broken. Without
+// it a single `| latter` at the end of a line stopped the whole pipeline from
+// breaking, which is two of the three over-long lines in this repository.
 func (p *printer) pipeline(e ast.Expr) []stageLine {
-	app, ok := e.(*ast.App)
-	if !ok || app.Via == "" || len(app.Args) == 0 {
-		return nil
-	}
-	value := app.Args[len(app.Args)-1]
-	stage := stageLine{p.stage(app), app}
+	switch e := e.(type) {
+	case *ast.App:
+		if e.Via == "" || len(e.Args) == 0 {
+			return nil
+		}
+		return p.chain(e.Args[len(e.Args)-1], stageLine{p.stage(e), e})
 
+	case *ast.Ward:
+		if via, value, ok := openedPipe(e); ok {
+			return p.chain(value, p.holeStage(via, e.Arms[0].Body))
+		}
+
+	case *ast.Let:
+		if via, value, ok := holePipe(e); ok {
+			return p.chain(value, p.holeStage(via, e.Body))
+		}
+	}
+	return nil
+}
+
+// holeStage renders the stage a piped hole word became, which is the particle
+// it was written with and whatever was said with the word.
+func (p *printer) holeStage(via string, body ast.Expr) stageLine {
+	return stageLine{text: p.via(via) + " " + p.expr(body, precPipe)}
+}
+
+// chain puts a stage after whatever fed it, flattening that in turn.
+func (p *printer) chain(value ast.Expr, stage stageLine) []stageLine {
 	if inner := p.pipeline(value); inner != nil {
 		return append(inner, stage)
 	}
@@ -481,10 +715,19 @@ func (p *printer) stage(app *ast.App) string {
 	return p.via(app.Via) + " " + strings.Join(parts, " ")
 }
 
+// bindHead is what a binding is written as before its `is`: a name, or the
+// pattern it takes its value apart with.
+func bindHead(b *ast.Bind) string {
+	if b.Pat != nil {
+		return patternString(b.Pat, true)
+	}
+	return b.Name
+}
+
 func (p *printer) let(e *ast.Let) {
 	for _, b := range e.Binds {
 		p.flushBefore(b.NamePos.Line)
-		head := "weave " + b.Name
+		head := "weave " + bindHead(b)
 		if len(b.Params) > 0 {
 			head = "channel " + b.Name
 			for _, param := range b.Params {
@@ -509,7 +752,7 @@ func (p *printer) ward(e *ast.Ward) {
 	p.depth++
 	for _, arm := range e.Arms {
 		p.flushBefore(arm.P.Line)
-		p.body(arm.Body, patternString(arm.Pat, false)+" :")
+		p.body(arm.Body, patternString(arm.Pat, false)+" "+p.gives())
 	}
 	p.depth--
 }
@@ -540,7 +783,8 @@ func (p *printer) inlineWard(e *ast.Ward) (string, bool) {
 func (p *printer) wardArms(e *ast.Ward) string {
 	text := "ward " + p.expr(e.Subject, precArg)
 	for _, arm := range e.Arms {
-		text += " (" + patternString(arm.Pat, false) + " : " + p.expr(arm.Body, precTop) + ")"
+		text += " (" + patternString(arm.Pat, false) + " " + p.gives() + " " +
+			p.expr(arm.Body, precTop) + ")"
 	}
 	return text
 }
@@ -620,9 +864,15 @@ func (p *printer) expr(e ast.Expr, prec int) string {
 		// commas, since without them `[Step North 3, Rest]` would be four
 		// elements rather than two — and that is exactly how the parser reads
 		// it back.
+		//
+		// One element is the exception, because the comma that does the
+		// separating never gets written: `[(inc x)]` under the comma rule
+		// would come out `[inc x]`, which reads back as two elements. A Thread
+		// of one is always written the space-separated way, so whatever is
+		// inside keeps the brackets that make it one thing.
 		parts := make([]string, len(e.Elems))
 		sep := ", "
-		if allAtoms(e.Elems) {
+		if len(e.Elems) < 2 || allAtoms(e.Elems) {
 			sep = " "
 		}
 		for i, el := range e.Elems {
@@ -657,7 +907,7 @@ func (p *printer) expr(e ast.Expr, prec int) string {
 		// Nested in an expression, a let has to use its inline form.
 		binds := make([]string, len(e.Binds))
 		for i, b := range e.Binds {
-			head := b.Name
+			head := bindHead(b)
 			for _, param := range b.Params {
 				head += " " + patternString(param, true)
 			}
@@ -698,8 +948,8 @@ func (p *printer) app(e *ast.App, prec int) string {
 }
 
 // isHoleLambda reports whether a lambda is one the hole words produced: a
-// first parameter bound whole or opened into the halves `former` and `latter`
-// asked for, and a second only when a `that` asked for one.
+// first parameter bound whole or taken apart into the components its width's
+// words asked for, and a second only when a `that` asked for one.
 func isHoleLambda(e *ast.Lambda) bool {
 	if len(e.Params) == 0 || len(e.Params) > 2 {
 		return false
@@ -713,28 +963,33 @@ func isHoleLambda(e *ast.Lambda) bool {
 	if v, ok := e.Params[0].(*ast.PVar); ok {
 		return v.Name == ast.HoleName
 	}
-	return isPairPattern(e.Params[0])
+	return isPartsPattern(e.Params[0])
 }
 
-// isPairPattern recognises the `(former, latter)` the parser writes for a
-// group holding one of those words.
-func isPairPattern(pat ast.Pattern) bool {
+// isPartsPattern recognises the `(former, latter)` or `(fore, mid, aft)` the
+// parser writes for a group holding one of those words.
+func isPartsPattern(pat ast.Pattern) bool {
 	tw, ok := pat.(*ast.PTwine)
-	if !ok || len(tw.Elems) != 2 {
+	if !ok {
 		return false
 	}
-	a, ok := tw.Elems[0].(*ast.PVar)
-	if !ok || a.Name != ast.FormerName {
+	want := ast.PartNames(len(tw.Elems))
+	if want == nil {
 		return false
 	}
-	b, ok := tw.Elems[1].(*ast.PVar)
-	return ok && b.Name == ast.LatterName
+	for i, el := range tw.Elems {
+		v, ok := el.(*ast.PVar)
+		if !ok || v.Name != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
-// openedPipe recognises the match a piped `former` or `latter` produced, and
-// returns the particle it was written with and the value it was given.
+// openedPipe recognises the match a piped component word produced, and returns
+// the particle it was written with and the value it was given.
 func openedPipe(e *ast.Ward) (via string, value ast.Expr, ok bool) {
-	if e.Via == "" || len(e.Arms) != 1 || !isPairPattern(e.Arms[0].Pat) {
+	if e.Via == "" || len(e.Arms) != 1 || !isPartsPattern(e.Arms[0].Pat) {
 		return "", nil, false
 	}
 	return e.Via, e.Subject, true

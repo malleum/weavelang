@@ -65,7 +65,10 @@ const (
 	WebCon     = "Web"
 	CircleCon  = "Circle"
 	TaverenCon = "Taveren"
-	KnotCon    = "Knot"
+	// LinkCon is who is joined to whom: disjoint sets over the nodes it was
+	// built from, threaded through a fold as the joining happens.
+	LinkCon = "Link"
+	KnotCon = "Knot"
 
 	// HoldCon is Weave's Option: `Held a | Stilled`.
 	HoldCon = "Hold"
@@ -118,12 +121,17 @@ const (
 	Show                         // rendering for output
 	Reckon                       // arithmetic: Earth and Water
 	Bulk                         // has a size: the collections
+	// Ply is the narrower thing Bulk is not: elements lying in a known order,
+	// so that a run of them can be taken, dropped or turned round. `Thread` and
+	// `Air` have it; a `Web` has a size but no order, which is why `len` asks
+	// for Bulk and `take` asks for this.
+	Ply
 )
 
 var talentNames = []struct {
 	bit  TalentSet
 	name string
-}{{Eq, "Eq"}, {Ord, "Ord"}, {Show, "Show"}, {Reckon, "Reckon"}, {Bulk, "Bulk"}}
+}{{Eq, "Eq"}, {Ord, "Ord"}, {Show, "Show"}, {Reckon, "Reckon"}, {Bulk, "Bulk"}, {Ply, "Ply"}}
 
 func (s TalentSet) String() string {
 	var names []string
@@ -149,14 +157,15 @@ var talentRules = map[string]talentRule{
 	Earth:   {Base: Eq | Ord | Show | Reckon},
 	Water:   {Base: Eq | Ord | Show | Reckon},
 	Fire:    {Base: Eq | Ord | Show},
-	Air:     {Base: Eq | Ord | Show | Bulk},
+	Air:     {Base: Eq | Ord | Show | Bulk | Ply},
 	Spirit:  {Base: Eq | Show},
 	KnotCon: {Base: Eq | Ord | Show},
 
-	ThreadCon:  {Base: Bulk, Inherited: Eq | Ord | Show},
+	ThreadCon:  {Base: Bulk | Ply, Inherited: Eq | Ord | Show},
 	CircleCon:  {Base: Bulk, Inherited: Eq | Show},
 	PatternCon: {Base: Bulk, Inherited: Eq | Show},
 	TaverenCon: {Base: Bulk, Inherited: Show},
+	LinkCon:    {Inherited: Show},
 	WebCon:     {Base: Bulk, Inherited: Eq | Show},
 	HoldCon:    {Inherited: Eq | Ord | Show},
 	WeavingCon: {Inherited: Eq | Ord | Show},
@@ -367,6 +376,13 @@ func adjustLevel(level int, t Type) {
 type Scheme struct {
 	Vars []*Var
 	Body Type
+	// Strands pairs a container variable with its element variable, for the
+	// verbs that read an element out of something a Talent cannot describe.
+	// `nth :: Earth -> c -> Hold e where Strand c e` says c is a Thread of e,
+	// or is Air and e is Fire — a relation between two types rather than a
+	// property of one, which is the whole reason it cannot be a Talent. See
+	// settleStrands in internal/check.
+	Strands [][2]*Var
 }
 
 // Mono returns a scheme with nothing quantified.
@@ -384,8 +400,16 @@ func (a *Alloc) Fresh(level int) *Var {
 
 // Instantiate replaces a scheme's quantified variables with fresh ones.
 func (a *Alloc) Instantiate(s *Scheme, level int) Type {
+	t, _ := a.InstantiateStrands(s, level)
+	return t
+}
+
+// InstantiateStrands is Instantiate, also handing back the scheme's Strand
+// pairs over the fresh variables, for the caller to settle once the container
+// is known.
+func (a *Alloc) InstantiateStrands(s *Scheme, level int) (Type, [][2]*Var) {
 	if len(s.Vars) == 0 {
-		return s.Body
+		return s.Body, nil
 	}
 	sub := make(map[*Var]*Var, len(s.Vars))
 	for _, v := range s.Vars {
@@ -393,7 +417,11 @@ func (a *Alloc) Instantiate(s *Scheme, level int) Type {
 		fresh.Talents = v.Talents
 		sub[v] = fresh
 	}
-	return substitute(s.Body, sub)
+	var strands [][2]*Var
+	for _, pair := range s.Strands {
+		strands = append(strands, [2]*Var{sub[pair[0]], sub[pair[1]]})
+	}
+	return substitute(s.Body, sub), strands
 }
 
 func substitute(t Type, sub map[*Var]*Var) Type {

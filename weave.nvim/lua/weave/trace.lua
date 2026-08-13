@@ -142,7 +142,9 @@ function M.blocks_in(buf)
 end
 
 --- source_for reads the input file the program should see, if there is one.
-local function source_for(dir)
+--- Exported because watching a function's calls runs the same program against
+--- the same input; see calls.lua.
+function M.source_for(dir)
   local input = M.input_for(dir)
   if not input then
     return ""
@@ -157,19 +159,35 @@ local function source_for(dir)
 end
 
 --- trace_file runs `weave trace` over a path and hands the records back.
+---
+--- The limits are the compiler's, not this one's: `weave trace` marks the
+--- definition that ran out of time or memory and traces the rest of the file
+--- without it, which is only possible from inside. Killing the process here
+--- would throw that away, so the timeout below is a backstop for a compiler
+--- that hangs rather than a program that is slow — generous enough that the
+--- compiler always gets to finish first.
 local function trace_file(path, dir, stdin, offset, done)
   local cfg = config.get()
-  vim.system({ cfg.cmd, "trace", path }, {
+  local cmd = {
+    cfg.cmd,
+    "trace",
+    "-timeout",
+    cfg.timeout_ms .. "ms",
+    "-memory",
+    tostring(cfg.memory_mb),
+    path,
+  }
+  vim.system(cmd, {
     stdin = stdin,
     cwd = dir,
-    timeout = cfg.timeout_ms,
+    timeout = cfg.timeout_ms * 8,
   }, function(res)
-    local records = {}
-    if res.code == 0 then
-      records = parse(res.stdout or "")
-      for _, rec in ipairs(records) do
-        rec.lnum = rec.lnum + offset
-      end
+    -- Records are read whatever the exit status: a run that stopped part way
+    -- through still reported the lines it reached, and those are the ones being
+    -- looked at.
+    local records = parse(res.stdout or "")
+    for _, rec in ipairs(records) do
+      rec.lnum = rec.lnum + offset
     end
     done(records)
   end)
@@ -190,7 +208,7 @@ function M.run(buf)
     return
   end
   local dir = vim.fs.dirname(file)
-  local stdin = source_for(dir)
+  local stdin = M.source_for(dir)
 
   if file:match("%.weave$") then
     trace_file(file, dir, stdin, 0, function(records)

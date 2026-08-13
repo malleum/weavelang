@@ -128,4 +128,111 @@ BUFFER = {
 eq("declarations are not answers", aoc.part_at(0, 5), 1)
 eq("and the one after is part two", aoc.part_at(0, 6), 2)
 
+-- line_holding: where a refetched problem scrolls to when part two arrives.
+local problem = {
+  "# Advent of Code 2017, day 5",
+  "",
+  "## --- Day 5: A Maze of Twisty Trampolines ---",
+  "",
+  "text",
+  "",
+  "## --- Part Two ---",
+  "",
+  "more text",
+}
+eq("finds part two", aoc.line_holding(problem, "Part Two"), 7)
+eq("finds the first match", aoc.line_holding(problem, "##"), 3)
+eq("nothing to find", tostring(aoc.line_holding(problem, "Part Three")), "nil")
+eq("an empty file", tostring(aoc.line_holding({}, "Part Two")), "nil")
+-- The text is looked for plainly, not as a pattern, since a heading is full of
+-- punctuation a pattern would read as syntax.
+eq("dashes are not a pattern", aoc.line_holding(problem, "--- Part Two ---"), 7)
+
+-- history, bracket, tried and report: what has already been sent.
+--
+-- "Wrong" is not the useful part of a wrong answer; which answer was wrong is,
+-- and a too-high and a too-low between them say where the answer must be.
+local dir = os.getenv("TMPDIR") or "/tmp"
+local puzzle = { dir = dir, year = 2017, day = 5 }
+local answers = dir .. "/.aoc-answers"
+os.remove(answers)
+os.remove(dir .. "/.aoc-submitted")
+
+eq("nothing sent yet", #aoc.history(puzzle), 0)
+
+local f = assert(io.open(answers, "w"))
+f:write("1000\t1\t4000\ttoo low\n")
+f:write("1100\t1\t9000\ttoo high\n")
+f:write("1200\t1\t5500\twrong\n")
+f:write("1300\t1\t5500\twrong\n")
+f:write("1400\t2\t17\tright\n")
+f:close()
+
+local entries = aoc.history(puzzle)
+eq("every answer is read back", #entries, 5)
+eq("with its part", entries[5].part, 2)
+eq("and what the site said", entries[2].verdict, "too high")
+
+local low, high = aoc.bracket(entries, 1)
+eq("a too low is a lower bound", low, 4000)
+eq("a too high is an upper one", high, 9000)
+eq("and a part with neither has none", tostring(aoc.bracket(entries, 2)), "nil")
+
+local tried = aoc.tried(entries, 1)
+eq("three distinct answers", #tried, 3)
+eq("the first, with its verdict", tried[1], "4000 (too low)")
+eq("the same answer twice is listed once", tried[3], "5500 (wrong)")
+
+local report = aoc.report(puzzle)
+eq("no stamp file means you may answer", report[1], "you may answer now")
+eq("part one's answers", report[2], "part 1: 4000 (too low), 9000 (too high), 5500 (wrong)")
+eq("and where the answer has to be", report[3], "  between 4000 and 9000")
+eq("part two's", report[4], "part 2: 17 (right)")
+
+-- Only whole numbers can be compared, so a word answer bounds nothing.
+local words = {
+  { at = 1, part = 1, answer = "abcdef", verdict = "too high" },
+  { at = 2, part = 1, answer = "12", verdict = "too low" },
+}
+local wlow, whigh = aoc.bracket(words, 1)
+eq("a word is not a bound", tostring(whigh), "nil")
+eq("but a number beside it still is", wlow, 12)
+
+-- known_false: what the record already rules out, so a submission that cannot
+-- be right is not spent finding that out again.
+eq("a repeat of a wrong answer", aoc.known_false(entries, 1, "5500"),
+  "already sent, and it was wrong")
+eq("a repeat of a too high one", aoc.known_false(entries, 1, "9000"),
+  "already sent, and it was too high")
+eq("at the lower bound", aoc.known_false(entries, 1, "4000"),
+  "already sent, and it was too low")
+eq("below the lower bound", aoc.known_false(entries, 1, "3999"),
+  "3999 is not above 4000, which came back too low")
+eq("above the upper bound", aoc.known_false(entries, 1, "12000"),
+  "12000 is not below 9000, which came back too high")
+eq("inside the bracket is allowed", tostring(aoc.known_false(entries, 1, "6000")), "nil")
+eq("a bound is per part", tostring(aoc.known_false(entries, 2, "3999")), "nil")
+eq("and a right answer is named as such", aoc.known_false(entries, 2, "17"),
+  "already sent, and it was right")
+
+-- An answer nobody graded says nothing. "Too soon" means the site never looked
+-- at it, so repeating it has to be allowed.
+local ungraded = {
+  { at = 1, part = 1, answer = "77", verdict = "too soon" },
+  { at = 2, part = 1, answer = "88", verdict = "unclear — read the reply" },
+}
+eq("a too-soon answer is not ruled out", tostring(aoc.known_false(ungraded, 1, "77")), "nil")
+eq("nor an unclear one", tostring(aoc.known_false(ungraded, 1, "88")), "nil")
+
+-- A word answer cannot be bracketed, but it can still be an exact repeat.
+local words2 = {
+  { at = 1, part = 1, answer = "ZFHKBJZW", verdict = "wrong" },
+  { at = 2, part = 1, answer = "40", verdict = "too low" },
+}
+eq("a repeated word", words2 and aoc.known_false(words2, 1, "ZFHKBJZW"),
+  "already sent, and it was wrong")
+eq("a different word is not bounded", tostring(aoc.known_false(words2, 1, "ABCDEFGH")), "nil")
+
+os.remove(answers)
+
 print("all ok")

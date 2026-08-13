@@ -11,8 +11,7 @@ cellAt k is cell sheet k else '#'
 
 isOpen k is neq '#' (cellAt k)
 
-findMark m is
-  sheet through knots through seek (k gives eq m (cellAt k)) else knot 0 0
+findMark m is sited sheet m else knot 0 0
 
 # Every open neighbour is one step away.
 steps k is around4 sheet k where isOpen as (1, this)

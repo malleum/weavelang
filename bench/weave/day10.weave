@@ -1,7 +1,7 @@
 # AoC 2024 day 10: trailhead scores and ratings over a height map. A trail
 # climbs by exactly one at each step; a score counts the summits reachable and
 # a rating counts the distinct routes to them.
-sheet is Source as pattern
+sheet is Source through pattern
 
 height k is cell sheet k | otherwise '.' | ord | sub _ 48
 

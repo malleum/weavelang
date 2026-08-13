@@ -37,6 +37,15 @@ var renamed = map[string]string{
 	"neighbors8": "nb8",
 	"tally":      "freq",
 	"shed":       "remove",
+	// Exact aliases, retired by the vocabulary audit: `head` was `first` under
+	// another name and `tail` was `drop 1`. A second spelling of a verb is a
+	// second thing to learn and nothing else.
+	"head": "first",
+	"tail": "drop 1",
+	// `bin` wrote base two and had no reading half at all.
+	"bin": "base 2",
+	// `it` was a third spelling of `_` and no program ever used it.
+	"it": "this",
 }
 
 // A retired name only counts when it is written as code — inside backticks in

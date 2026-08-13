@@ -106,6 +106,21 @@ func (g *gen) exprTail(b *body, e ast.Expr, sc *scope, ti *tailInfo) (string, bo
 		return g.exprTail(b, e.Body, inner, ti)
 
 	case *ast.App:
+		// A collection the loop owns escaping inside a constructor — `Held xs`
+		// — is escaping exactly as much as a bare mention is, and the caller
+		// may keep what it gets. The analysis allows it on that understanding;
+		// this is the other half of the bargain.
+		if c, isCtor := e.Fn.(*ast.Ctor); isCtor && c.Name != "Source" {
+			args := g.args(b, e.Args, sc)
+			for i, a := range e.Args {
+				if x, isVar := a.(*ast.Var); isVar {
+					if cname, found := sc.lookup(x.Name); found && ti.ownedVars[cname] {
+						args[i] = fmt.Sprintf("w_disown(%s)", args[i])
+					}
+				}
+			}
+			return g.ctorValue(b, c.Name, args, c.P, sc), false
+		}
 		if v, ok := e.Fn.(*ast.Var); ok {
 			if _, shadowed := sc.lookup(v.Name); !shadowed {
 				if idx, ok := ti.jumpTarget(v.Name, len(e.Args)); ok {
@@ -127,6 +142,19 @@ func (g *gen) exprTail(b *body, e ast.Expr, sc *scope, ti *tailInfo) (string, bo
 // emitTailJump rebinds the parameters and loops, selecting the member being
 // jumped to when this is a merged group.
 func (g *gen) emitTailJump(b *body, e *ast.App, sc *scope, ti *tailInfo, member int) {
+	// A parameter this loop owns is single-threaded across the jump, and the
+	// arguments are where that is true of it: whatever they build from it goes
+	// into the slot it came from and nothing else can reach the old value. That
+	// makes a helper it is handed over to, or a chain of updates, as writable
+	// here as a bare `set` — see yieldsOwned.
+	for v := range ti.ownedVars {
+		if g.owned[v] {
+			continue
+		}
+		g.owned[v] = true
+		defer delete(g.owned, v)
+	}
+
 	next := make([]string, len(e.Args))
 	for i, arg := range e.Args {
 		// A grid this loop owns is updated in place rather than copied.

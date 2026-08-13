@@ -49,10 +49,13 @@ const (
 	RBracket   // ]
 	LBrace     // {
 	RBrace     // }
-	Underscore // _ , also spelled `it` and `this`
+	Underscore // _ , also spelled `this`
 	Partner    // that , the second argument
-	Former     // former , the first half of the first argument
+	Former     // former , the first half of a Twine of two
 	Latter     // latter , the second half
+	Fore       // fore , the first of a Twine of three
+	Mid        // mid , the second
+	Aft        // aft , the third
 	DotDot     // .. , which introduces a rest pattern
 )
 
@@ -93,6 +96,9 @@ var kindNames = [...]string{
 	Partner:    "that",
 	Former:     "former",
 	Latter:     "latter",
+	Fore:       "fore",
+	Mid:        "mid",
+	Aft:        "aft",
 	DotDot:     "..",
 }
 
@@ -108,16 +114,30 @@ func (k Kind) String() string {
 // the compiler, which keeps them usable as pipeline stages and arguments.
 //
 // Some of these are spellings of a symbol rather than words of their own:
-// `gives` is `:`, and `it` and `this` are both `_`. They lex to the same
-// tokens, so nothing below the lexer knows the difference and `weave fmt`
-// prints whichever the chosen style asks for, the way it already prints `is`
-// or `=`. Each was chosen because it could never be a verb — the rule that had
-// `of`, `at` and `from` cut — and none is a name anyone reaches for.
+// `gives` is `:` and `this` is `_`. They lex to the same tokens, so nothing
+// below the lexer knows the difference and `weave fmt` prints whichever the
+// chosen style asks for, the way it already prints `is` or `=`. Each was
+// chosen because it could never be a verb — the rule that had `of`, `at` and
+// `from` cut — and none is a name anyone reaches for.
 //
-// `that`, `former` and `latter` are words with no symbol. `that` is the second
-// argument, so `braid (add this that) 0` needs no parameter names; `former`
-// and `latter` are the two halves of the first argument, so a stage handed a
-// Twine can name both without a pattern.
+// The rest are words with no symbol, and they answer two different questions.
+// `that` is the second *argument*, so `braid (add this that) 0` needs no
+// parameter names. The others are *components* of the first argument, so a
+// stage handed a Twine can name them without writing a pattern.
+//
+// There is a set of component words per width, and that is the point rather
+// than an accident. `former` and `latter` are the halves of a Twine of two —
+// which is what those words mean in English and the only width they mean it at.
+// `fore`, `mid` and `aft` are the three parts of a Twine of three. Each word
+// therefore fixes both the position *and* the width, so a group holding one can
+// be desugared where it stands.
+//
+// Two earlier spellings named a component relative to a width instead, and both
+// failed the same way: "the latter of three" does not exist, and "the last of
+// however many" cannot be resolved until the type is known, which is later than
+// the parser and — for a bracket group, whose parameter type is settled before
+// its argument arrives — later than it can be asked for at all. Nothing names a
+// component of a Twine of four; at that width a pattern is clearer anyway.
 var keywords = map[string]Kind{
 	"is":       Is,
 	"weave":    Weave,
@@ -131,11 +151,13 @@ var keywords = map[string]Kind{
 	"else":     Else,
 	"failing":  Failing,
 	"gives":    Colon,
-	"it":       Underscore,
 	"this":     Underscore,
 	"that":     Partner,
 	"former":   Former,
 	"latter":   Latter,
+	"fore":     Fore,
+	"mid":      Mid,
+	"aft":      Aft,
 }
 
 // Keywords returns the reserved words. The reference page walks it, so a word

@@ -197,21 +197,36 @@ end
 --- cursor out of the file being edited.
 ---
 --- The first call fetches and saves it; every call after that reads the saved
---- copy, so the site is asked once however often the window is closed. Part
---- two only appears once part one is answered, so `bang` forces a refetch.
+--- copy, so the site is asked once however often the window is closed. Part two
+--- only appears once part one is answered, so `force` fetches it again — which
+--- is what a correct submission does for you.
+---
+--- opts:
+---   force        fetch again even though the file is already there
+---   only_if_open leave the window alone unless one is already showing it,
+---                which is what a refetch after a correct answer wants: the
+---                file is brought up to date either way, but nothing appears
+---                on screen that was not there before
+---   jump         a line to scroll the window to, if it holds one
+---   quiet        say nothing on the way
 ---@param path string|nil
----@param bang boolean|nil
-function M.problem(path, bang)
+---@param opts table|boolean|nil  a boolean is read as `force`, as the command passes
+function M.problem(path, opts)
+  if type(opts) == "boolean" or opts == nil then
+    opts = { force = opts or false }
+  end
   path = path or vim.api.nvim_buf_get_name(0)
   local p = M.puzzle_of(path)
   if not p then
-    say("cannot tell which puzzle this is: no year and day in the path", vim.log.levels.WARN)
+    if not opts.quiet then
+      say("cannot tell which puzzle this is: no year and day in the path", vim.log.levels.WARN)
+    end
     return
   end
   local out = p.dir .. "/" .. config.get().aoc.problem_name
 
-  if vim.uv.fs_stat(out) and not bang then
-    M.show(out)
+  if vim.uv.fs_stat(out) and not opts.force then
+    M.show(out, opts)
     return
   end
 
@@ -219,7 +234,9 @@ function M.problem(path, bang)
   if not cookie then
     -- The problem is readable without a cookie; only part two needs one.
     cookie = ""
-    say(err .. " — fetching part one only", vim.log.levels.WARN)
+    if not opts.quiet then
+      say(err .. " — fetching part one only", vim.log.levels.WARN)
+    end
   end
 
   request({ url = url_for(p), session = cookie }, function(body, rerr)
@@ -235,7 +252,7 @@ function M.problem(path, bang)
     end
     f:write(md)
     f:close()
-    M.show(out)
+    M.show(out, opts)
   end)
 end
 
@@ -283,22 +300,65 @@ end
 --- show opens a file in a vertical split on the right and puts the cursor
 --- back where it was. Reusing a window that already holds the file means
 --- running the command twice does not stack splits.
+---
+--- `opts.only_if_open` stops it opening one at all, and `opts.jump` scrolls a
+--- window that is already there to the first line holding that text — which is
+--- how part two lands in view the moment part one is answered.
 ---@param file string
-function M.show(file)
+---@param opts table|nil
+function M.show(file, opts)
+  opts = opts or {}
   local here = vim.api.nvim_get_current_win()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
     if name == file then
       vim.api.nvim_win_call(win, function() vim.cmd("edit!") end)
+      if opts.jump then
+        M.jump_to(win, opts.jump)
+      end
       vim.api.nvim_set_current_win(here)
       return
     end
+  end
+  if opts.only_if_open then
+    return
   end
   vim.cmd("botright vsplit " .. vim.fn.fnameescape(file))
   vim.wo.wrap = true
   vim.wo.linebreak = true
   vim.bo.filetype = "markdown"
+  if opts.jump then
+    M.jump_to(vim.api.nvim_get_current_win(), opts.jump)
+  end
   vim.api.nvim_set_current_win(here)
+end
+
+--- jump_to puts a window's cursor on the first line holding `text`, and that
+--- line at the top, so what has just appeared is what you are looking at.
+---@param win integer
+---@param text string
+function M.jump_to(win, text)
+  local buf = vim.api.nvim_win_get_buf(win)
+  local lnum = M.line_holding(vim.api.nvim_buf_get_lines(buf, 0, -1, false), text)
+  if not lnum then
+    return
+  end
+  vim.api.nvim_win_set_cursor(win, { lnum, 0 })
+  vim.api.nvim_win_call(win, function() vim.cmd("normal! zt") end)
+end
+
+--- line_holding is the 1-based line number of the first line containing text,
+--- or nil. Split out so the search is testable without an editor.
+---@param lines string[]
+---@param text string
+---@return integer|nil
+function M.line_holding(lines, text)
+  for i, line in ipairs(lines) do
+    if line:find(text, 1, true) then
+      return i
+    end
+  end
+  return nil
 end
 
 -- ------------------------------------------------------------------- submit
@@ -395,11 +455,93 @@ function M.cooldown_left(p)
   return left, vim.trim(note)
 end
 
-local function remember_submission(p, wait, note)
+--- Every answer sent for a puzzle, in the order they were sent.
+---
+--- The stamp file beside it holds one thing — when another answer may go — and
+--- is overwritten each time. This is the other half: what was actually sent and
+--- what came back. "Wrong" is not the useful part of a wrong answer; *which*
+--- answer was wrong is, because the next one has to be a different one, and
+--- because a too-high and a too-low between them say where the answer is.
+local function history_file(p)
+  return p.dir .. "/.aoc-answers"
+end
+
+--- history reads back every answer sent for this puzzle.
+---@param p table
+---@return table[] each { at = integer, part = integer, answer = string, verdict = string }
+function M.history(p)
+  local f = io.open(history_file(p), "r")
+  if not f then
+    return {}
+  end
+  local out = {}
+  for line in f:lines() do
+    local at, part, answer, verdict = line:match("^(%d+)\t(%d+)\t([^\t]*)\t(.*)$")
+    if at then
+      out[#out + 1] = {
+        at = tonumber(at),
+        part = tonumber(part),
+        answer = answer,
+        verdict = verdict,
+      }
+    end
+  end
+  f:close()
+  return out
+end
+
+--- bracket reads the bounds out of the answers already sent for a part: every
+--- "too low" is below the answer and every "too high" is above it.
+---
+--- This is the whole reason the site bothers to say which way you were wrong,
+--- and it is thrown away if nobody writes it down. Only answers that are whole
+--- numbers count, since nothing else can be compared.
+---@param entries table[]
+---@param part integer
+---@return integer|nil low, integer|nil high
+function M.bracket(entries, part)
+  local low, high
+  for _, e in ipairs(entries) do
+    local n = tonumber(e.answer)
+    if e.part == part and n and n == math.floor(n) then
+      if e.verdict == "too low" and (not low or n > low) then
+        low = n
+      elseif e.verdict == "too high" and (not high or n < high) then
+        high = n
+      end
+    end
+  end
+  return low, high
+end
+
+--- tried lists the answers already sent for a part, newest last, without
+--- repeating one that was sent twice.
+---@param entries table[]
+---@param part integer
+---@return string[]
+function M.tried(entries, part)
+  local out, seen = {}, {}
+  for _, e in ipairs(entries) do
+    if e.part == part and not seen[e.answer] then
+      seen[e.answer] = true
+      out[#out + 1] = ("%s (%s)"):format(e.answer, e.verdict)
+    end
+  end
+  return out
+end
+
+local function remember_submission(p, wait, note, part, answer)
   local f = io.open(stamp_file(p), "w")
   if f then
     f:write(string.format("%d %d %s\n", os.time(), wait, note))
     f:close()
+  end
+  -- Appended, never rewritten: the point of it is what came before.
+  local h = io.open(history_file(p), "a")
+  if h then
+    h:write(string.format("%d\t%d\t%s\t%s\n", os.time(), part or 0,
+      (answer or ""):gsub("[\t\n]", " "), note))
+    h:close()
   end
 end
 
@@ -471,10 +613,11 @@ function M.submit(path, bang)
     return
   end
 
-  local left, note = M.cooldown_left(p)
+  local left = M.cooldown_left(p)
   if left > 0 and not bang then
-    say(string.format("%s to wait%s", M.clock(left), note ~= "" and (" — last: " .. note) or ""),
-      vim.log.levels.WARN)
+    -- The whole report, not just the clock: a submission held back is exactly
+    -- when what has already been sent is worth reading.
+    say(table.concat(M.report(p), "\n"), vim.log.levels.WARN)
     return
   end
 
@@ -492,6 +635,15 @@ function M.submit(path, bang)
       say(aerr, vim.log.levels.ERROR)
       return
     end
+    local ruled_out = M.known_false(M.history(p), part, answer)
+    if ruled_out and not bang then
+      -- The answer is wrong on the evidence already in hand, and sending it
+      -- costs a submission and the cooldown that follows one. The bang is
+      -- already "send it anyway", so it overrides this as it does the wait.
+      say(string.format("part %d: %s — %s. :AocSubmit! to send it anyway",
+        part, answer, ruled_out), vim.log.levels.WARN)
+      return
+    end
     say(string.format("part %d: %s — sending", part, answer))
     request({
       url = url_for(p, "/answer"),
@@ -503,18 +655,110 @@ function M.submit(path, bang)
         return
       end
       local msg, wait = M.verdict(body)
-      remember_submission(p, wait, msg)
+      remember_submission(p, wait, msg, part, answer)
       local level = vim.log.levels.INFO
       if msg ~= "right" then
         level = vim.log.levels.WARN
       end
       say(string.format("part %d: %s (%s) — %s", part, answer, msg,
         wait > 0 and (M.clock(wait) .. " to wait") or "go on"), level)
+
+      -- A right answer changes the page: part two appears, or the day is
+      -- recorded as finished. The saved copy is brought up to date either way,
+      -- and a window already showing it is scrolled to what has just arrived —
+      -- but none is opened, because a submission is not a request to read.
+      if msg == "right" then
+        M.problem(path, {
+          force = true,
+          only_if_open = true,
+          quiet = true,
+          jump = part == 1 and "Part Two" or nil,
+        })
+      end
     end)
   end)
 end
 
---- time reports how long until another answer may be sent.
+--- judged reports whether a verdict is one the site actually reached. "Too
+--- soon" means the answer was never graded, and an answer nobody graded says
+--- nothing about whether it is right.
+local function judged(verdict)
+  return verdict == "wrong" or verdict == "too high" or verdict == "too low"
+    or verdict == "right"
+end
+
+--- known_false says why the answers already sent rule this one out, or nothing
+--- if they do not.
+---
+--- Two ways they can. The same answer graded before is graded the same way now,
+--- and a bound already found puts everything past it out of reach: an answer at
+--- or below a `too low` is too low, whatever else is true of it.
+---@param entries table[]
+---@param part integer
+---@param answer string
+---@return string|nil
+function M.known_false(entries, part, answer)
+  for _, e in ipairs(entries) do
+    if e.part == part and e.answer == answer and judged(e.verdict) then
+      return ("already sent, and it was %s"):format(e.verdict)
+    end
+  end
+
+  local n = tonumber(answer)
+  if not n or n ~= math.floor(n) then
+    return nil
+  end
+  local low, high = M.bracket(entries, part)
+  if low and n <= low then
+    return ("%d is not above %d, which came back too low"):format(n, low)
+  end
+  if high and n >= high then
+    return ("%d is not below %d, which came back too high"):format(n, high)
+  end
+  return nil
+end
+
+--- report lays out what is known about a puzzle: when another answer may go,
+--- and every answer already sent with what the site said about it.
+---
+--- Knowing an answer was too high is worth nothing on its own. Knowing *which*
+--- answer was too high is worth the next submission, and knowing both bounds is
+--- worth all of them — so the bracket is stated outright rather than left to be
+--- worked out from a list.
+---@param p table
+---@return string[]
+function M.report(p)
+  local left, note = M.cooldown_left(p)
+  local lines = {}
+  if left == 0 then
+    lines[1] = "you may answer now"
+  else
+    lines[1] = ("%s to wait"):format(M.clock(left))
+  end
+  if note ~= "" then
+    lines[1] = lines[1] .. " — last: " .. note
+  end
+
+  local entries = M.history(p)
+  for part = 1, 2 do
+    local tried = M.tried(entries, part)
+    if #tried > 0 then
+      lines[#lines + 1] = ("part %d: %s"):format(part, table.concat(tried, ", "))
+      local low, high = M.bracket(entries, part)
+      if low and high then
+        lines[#lines + 1] = ("  between %d and %d"):format(low, high)
+      elseif low then
+        lines[#lines + 1] = ("  above %d"):format(low)
+      elseif high then
+        lines[#lines + 1] = ("  below %d"):format(high)
+      end
+    end
+  end
+  return lines
+end
+
+--- time reports how long until another answer may be sent, and what has already
+--- been sent.
 ---@param path string|nil
 function M.time(path)
   local p = M.puzzle_of(path or vim.api.nvim_buf_get_name(0))
@@ -522,12 +766,7 @@ function M.time(path)
     say("cannot tell which puzzle this is: no year and day in the path", vim.log.levels.WARN)
     return
   end
-  local left, note = M.cooldown_left(p)
-  if left == 0 then
-    say("you may answer now" .. (note ~= "" and (" — last: " .. note) or ""))
-    return
-  end
-  say(string.format("%s to wait — last: %s", M.clock(left), note))
+  say(table.concat(M.report(p), "\n"))
 end
 
 return M

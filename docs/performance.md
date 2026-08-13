@@ -42,15 +42,23 @@ size as the 2024 puzzles — 1000 rows for day 1, a 55×55 height map for day 10
 
 | benchmark | weave | rss | go | rss | ratio |
 |---|---|---|---|---|---|
-| `fib 32` — naive recursion | 10.7 ms | 9 M | 14.0 ms | 9 M | **0.76×** |
-| `chain` — map/filter/sum over 20 M | 27.5 ms | 9 M | 27.6 ms | 9 M | **1.00×** |
-| `chainalloc` — the same, written with intermediate slices | 27.2 ms | 9 M | 641.8 ms | 683 M | **0.04×** |
-| `loop` — 100 M tail-recursive steps | 84.9 ms | 9 M | 75.9 ms | 9 M | 1.12× |
-| `collatz` — longest chain below 300 000 | 47.7 ms | 9 M | 83.0 ms | 9 M | **0.57×** |
-| `mapbuild` — 2 M map insertions | 149.3 ms | 98 M | 161.7 ms | 47 M | **0.92×** |
-| `text` — 16 MB, 3.2 M words | 184.6 ms | 241 M | 201.4 ms | 87 M | **0.92×** |
+| `fib 32` — naive recursion | 13.9 ms | 9 M | 16.3 ms | 9 M | **0.85×** |
+| `chain` — map/filter/sum over 20 M | 35.1 ms | 9 M | 55.3 ms | 9 M | **0.64×** |
+| `chainalloc` — the same, written with intermediate slices | 34.7 ms | 9 M | 875.3 ms | 683 M | **0.04×** |
+| `loop` — 100 M tail-recursive steps | 117.7 ms | 9 M | 111.2 ms | 9 M | 1.06× |
+| `collatz` — longest chain below 300 000 | 41.3 ms | 9 M | 81.3 ms | 9 M | **0.51×** |
+| `mapbuild` — 2 M map insertions | 280.5 ms | 50 M | 547.6 ms | 45 M | **0.51×** |
+| `text` — 16 MB, 3.2 M words | 255.1 ms | 241 M | 338.2 ms | 95 M | **0.75×** |
 
-Ratios below 1.00 are Weave being faster.
+Ratios below 1.00 are Weave being faster. These are best of five on one
+machine, so the ratios carry and the milliseconds do not — a slower box moves
+both columns together.
+
+`mapbuild` moved most since the last round: 0.92× and 98 M before, 0.51× and
+50 M now, from two changes with nothing to do with maps — a `Held` of a heap
+value stopped allocating, and the flat table packed its slots once its keys and
+values were both unboxed. Nothing in this suite sorts, so none of it shows the
+sort work below.
 
 **`fib`** is 2.7 million calls with nothing to optimise, so it measures call
 overhead and integer arithmetic and little else.
@@ -557,6 +565,60 @@ The proof is deliberately narrow, and `weave build -no-in-place` turns it off �
 the differential suite compiles every program both ways and requires the same
 answer. Bind the accumulator to another name, capture it in a lambda, take its
 `keys`, or return something that is not the update, and it copies.
+
+### A `gentle` loop builds nothing per turn
+
+`gentle` is Weave's loop, and it used to allocate four objects a turn: the
+`Weaving` its step answers with, and — when the accumulator is a Twine of state,
+which is how a walk carries two things — the Twine as well. Both were built and
+taken straight back apart by the very next lines of the loop, and nothing else
+ever saw either.
+
+Neither is built now. The step is compiled in *statement* position, so `Woven x`
+assigns the accumulator and `Gentled y` assigns the answer and sets a flag; the
+state Twine is carried one component to a variable. Both are put together once
+when the loop ends, because `gentle` answers with a Weaving and `failing` reads
+which case it was.
+
+| the trampoline walk of AoC 2017 day 5 | before | after |
+|---|---|---|
+| time | 5.5 s | 0.46 s |
+| peak heap | 2.9 GB | 51.7 KB |
+| allocations | 112 M | 9 |
+
+A step ending in a `ward` is not split, and neither is one handing on a Twine it
+did not write out on the spot; both compile exactly as they did.
+
+### A search forgets the branches it abandons
+
+In-place updating cannot help a *backtracking* search, and it is worth being
+plain about why: a backtrack uses the collection it was handed once per
+**option**, not once. The old value has to survive for the next branch, so it is
+genuinely not single-threaded and no analysis will ever say otherwise. AoC 2025
+day 10 spent 70% of its memory on `mend` copying a row per node of the search,
+and held all 296 MB of it at exit.
+
+So instead of freeing those one at a time, a turn of a fused fold forgets them
+all at once. The arena is a bump pointer: the loop marks where it has got to,
+lets the turn allocate whatever it likes, and puts the pointer back.
+
+| AoC 2025 day 10 | before | after |
+|---|---|---|
+| time | 893 ms | 98 ms |
+| taken from the OS | 297 MB | 7 MB |
+
+The condition is that nothing allocated during a turn may be reachable after it,
+and four things have to hold for that — the accumulator is an unboxed Power, the
+elements likewise, no stage holds state across turns, and nothing reachable
+stores into a global (a `remember` table rules the loop out; a top-level value is
+forced before the region opens). Anything that cannot be shown to satisfy all
+four compiles as it did, and `weave build -no-regions` turns it off.
+
+One thing to know when reading a profile: **`weave build -tally` does not hear
+about a release.** It records every allocation against its site, so a program
+using regions reports its cumulative allocation as live at exit while the arena
+line beside it correctly reports what was taken from the operating system. Day
+10 says 296.6 MB and 7.0 MB on the same screen; the second is the true one.
 
 ## What an overflow check costs
 

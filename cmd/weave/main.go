@@ -11,6 +11,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,7 +22,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/malleum/weave/internal/build"
 
@@ -424,6 +428,10 @@ func cmdRun(args []string) error {
 // A definition with arguments has no value, so its inferred type is reported
 // instead; the output expression is reported with an empty name. This is what
 // the editor plugin shows as ghost text, and it is deliberately dull to parse.
+//
+// With -timeout, a definition that will not finish reports the hourglass
+// instead of a value and the rest of the file is traced without it. See
+// traceUnderLimit.
 func cmdTrace(args []string) error {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	opts := buildFlags(fs)
@@ -431,6 +439,12 @@ func cmdTrace(args []string) error {
 	// optimiser is time that buys nothing.
 	opts.Opt = "-O0"
 	opts.Trace = true
+	limit := fs.Duration("timeout", 0,
+		"give up on a definition that runs longer than this and trace the rest without it")
+	memory := fs.Int64("memory", 6144,
+		"give up on a definition that wants more than this many megabytes; 0 for no ceiling")
+	fs.StringVar(&opts.Watch, "watch", "",
+		"also record what this function's names held on each call")
 	path, src, err := sourceWith(fs, args, "trace")
 	if err != nil {
 		return err
@@ -471,6 +485,10 @@ func cmdTrace(args []string) error {
 		fmt.Fprintf(os.Stderr, "weave trace: %d definition(s) left out; the rest is below\n", dropped)
 	}
 
+	if *limit > 0 || *memory > 0 {
+		return traceUnderLimit(path, kept, *opts, res.Executable, *limit, *memory<<20)
+	}
+
 	cmd := exec.Command(res.Executable)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -484,6 +502,186 @@ func cmdTrace(args []string) error {
 	}
 	return nil
 }
+
+// What a line that was cut short reports instead of a value: the hourglass for
+// one that ran out of time, and the slashed circle for one that asked for more
+// memory than it was going to get.
+//
+// Neither is an emoji. An editor that renders one double-width pushes every
+// other line's ghost text out of alignment, which rules out the stopwatch, the
+// alarm clock and everything in that block.
+const (
+	traceTimedOut   = "⧖"
+	traceOverMemory = "⊘"
+)
+
+// traceTurns is how many times the program may be run. The first go plus three
+// more: a file with more slow definitions than that is one where the answer is
+// to look at the program, not to spend the afternoon waiting on it.
+const traceTurns = 4
+
+// traceUnderLimit runs the traced program under limits, and keeps going when
+// one of them stops it. Everything that reported is kept, the first item that
+// did not gets the mark saying why, and then — exactly as Salvage does with the
+// item an error is in — that item is blanked out of the source and the program
+// is compiled and run again, so the lines below it report too.
+//
+// Time and memory are the same problem and get the same answer. A file being
+// edited is full of definitions that are half written, and a half-written
+// definition is as likely to ask for every byte in the machine as it is to loop
+// for ever. Neither should cost more than its own line's ghost text: the tracer
+// runs a program nobody asked to run.
+//
+// Each turn re-runs the lines above the blanked item, which is work already
+// done; they reported inside the limits the first time, so it is cheap work,
+// and it buys a program that needs no way of being resumed part way through.
+func traceUnderLimit(path, src string, opts build.Options, exe string, limit time.Duration, memory int64) error {
+	// The program is run more than once and reads Source from stdin, so stdin
+	// has to be held rather than handed over.
+	in, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return err
+	}
+
+	var out strings.Builder
+	reported := map[int]bool{}
+	after := 0
+	for turn := 0; ; turn++ {
+		stdout, cut, err := runFor(exe, in, limit, memory)
+		if err != nil {
+			return err
+		}
+		// A record for a line already reported is the same record, from the
+		// same program on the same input. The first one is the one to keep.
+		var seen []int
+		for _, rec := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
+			if strings.HasPrefix(rec, "@") {
+				// A watched call's records carry their own call number and
+				// belong to no line, so there is nothing to keep them in step
+				// with. Only the first turn's are kept; a later turn would
+				// repeat the same calls under the same numbers.
+				if turn == 0 {
+					out.WriteString(rec)
+					out.WriteByte('\n')
+				}
+				continue
+			}
+			line, ok := recordLine(rec)
+			if !ok {
+				continue
+			}
+			seen = append(seen, line)
+			if !reported[line] {
+				out.WriteString(rec)
+				out.WriteByte('\n')
+			}
+		}
+		// Marked after the whole run, so a line that legitimately reports twice
+		// is not silenced the second time by its own first record.
+		for _, line := range seen {
+			reported[line] = true
+		}
+
+		if cut == "" {
+			break
+		}
+		item, found := build.Unreported(build.Items(src), reported, after)
+		if !found {
+			// The program was cut short with every item accounted for, so there
+			// is no line to blame and nothing a further turn would add.
+			break
+		}
+		fmt.Fprintf(&out, "%d\t%s\t%s\n", item.Line, item.Name, cut)
+		after = item.Line
+		if turn+1 >= traceTurns {
+			break
+		}
+
+		src = build.Blank(src, item.Line)
+		// Whatever needed the blanked item cannot compile without it, and
+		// Salvage is what takes those out.
+		trimmed, _ := build.Salvage(path, src)
+		bag := diag.New(path, trimmed)
+		res, err := build.Compile(path, trimmed, opts, bag)
+		if err != nil {
+			// Nothing left that compiles. What has reported still stands.
+			break
+		}
+		src, exe = trimmed, res.Executable
+	}
+
+	fmt.Print(out.String())
+	return nil
+}
+
+// recordLine reads the line number off a trace record, and reports whether the
+// text was one.
+func recordLine(rec string) (int, bool) {
+	tab := strings.IndexByte(rec, '\t')
+	if tab <= 0 {
+		return 0, false
+	}
+	line, err := strconv.Atoi(rec[:tab])
+	if err != nil || line <= 0 {
+		return 0, false
+	}
+	return line, true
+}
+
+// runFor runs the traced program with the given Source, and reports what it
+// printed along with the mark for whatever cut it short — empty when nothing
+// did. The runtime flushes every record as it writes it, so what arrived before
+// the axe fell is what comes back.
+//
+// The two ceilings are enforced from different sides, because they have to be.
+// Time is the tracer's to keep: a program that will not finish cannot be asked
+// to notice. Memory is the program's own, since only it knows what it has
+// taken — every byte it gets from the operating system goes through one place
+// in the runtime, and that place counts. It comes in through the environment so
+// that a traced program and a run one are the same program.
+func runFor(exe string, in []byte, limit time.Duration, memory int64) (string, string, error) {
+	ctx := context.Background()
+	if limit > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, limit)
+		defer cancel()
+	}
+
+	var stdout strings.Builder
+	cmd := exec.CommandContext(ctx, exe)
+	cmd.Stdin = bytes.NewReader(in)
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+	if memory > 0 {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("WEAVE_MEM_CAP=%d", memory))
+	}
+	// Without this the wait sits on the pipe until whatever the killed program
+	// left behind closes it.
+	cmd.WaitDelay = time.Second
+
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		return stdout.String(), traceTimedOut, nil
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if exit.ExitCode() == wOverMemory {
+				return stdout.String(), traceOverMemory, nil
+			}
+			// A program that stopped for a reason of its own has said why on
+			// stderr, and what it reported before stopping is still worth
+			// showing. It is not a line anybody can mark.
+			return stdout.String(), "", nil
+		}
+		return "", "", err
+	}
+	return stdout.String(), "", nil
+}
+
+// wOverMemory is W_EXIT_OVER_MEMORY from the runtime: what a program exits with
+// when it has gone past WEAVE_MEM_CAP. Kept in step by a test.
+const wOverMemory = 9
 
 // defaultCacheDir is where the compiled runtime is kept between runs. The
 // cache is keyed by the runtime's contents and the flags it was built with, so
@@ -514,10 +712,14 @@ func buildFlags(fs *flag.FlagSet) *build.Options {
 		"use the general prelude verbs instead of typed primitive helpers")
 	fs.BoolVar(&opts.CheckOverflow, "overflow", false,
 		"stop the program when Earth arithmetic overflows, instead of wrapping")
+	fs.BoolVar(&opts.DisableRegions, "no-regions", false,
+		"keep a fused loop turn's storage instead of handing it back when the turn ends")
 	fs.BoolVar(&opts.DisableInPlace, "no-in-place", false,
 		"copy on every grid update instead of writing through when unshared")
 	fs.BoolVar(&opts.DisableRelease, "no-release", false,
 		"keep every Thread a function builds instead of freeing the dead ones")
+	fs.BoolVar(&opts.Tally, "tally", false,
+		"report, on exit, what was holding the heap at its largest and where it came from")
 	return opts
 }
 

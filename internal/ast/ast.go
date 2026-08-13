@@ -88,6 +88,17 @@ type Decl struct {
 	// its results are kept, keyed on the arguments, so a call that repeats
 	// costs a lookup. It is a property of the definition, not of one clause.
 	Memo bool
+	// Pat is set when the definition takes its value apart rather than naming
+	// it: `(width, height) is dimsOf Source`. Name is then a name no source can
+	// spell, holding the value itself, and ExpandPatterns turns the definition
+	// into that one plus a projection for each name the pattern binds. Only the
+	// parser and the formatter see this; the checker expands it first.
+	Pat Pattern
+	// Hidden keeps a definition ExpandPatterns generated out of `weave trace`,
+	// so that a line binding several names reports one value and not one per
+	// name. Display is what to call the one that is reported.
+	Hidden  bool
+	Display string
 }
 
 func (d *Decl) Pos() token.Pos { return d.NamePos }
@@ -182,6 +193,11 @@ type Bind struct {
 	NamePos token.Pos
 	Params  []Pattern
 	Value   Expr
+	// Pat is set instead of Name when the binding takes its value apart:
+	// `weave (a, b) is p`. A binding that does that has no name of its own and
+	// no parameters, so Name is empty and Params is nil. Everywhere that reads
+	// Name has to ask about Pat first.
+	Pat Pattern
 }
 
 func (b *Bind) Pos() token.Pos { return b.NamePos }
@@ -209,6 +225,10 @@ type Ward struct {
 	// line. Only the formatter reads it, and only to decide whether the one
 	// line is still short enough.
 	Inline bool
+	// Binding marks a ward ExpandPatterns generated for a definition that takes
+	// its value apart. Nobody wrote it, so a diagnostic about it has to name
+	// what was written instead.
+	Binding bool
 }
 
 // Arm is one `pattern : expression` case of a Ward.
@@ -265,33 +285,51 @@ type WebLit struct {
 // that survives had nothing to stand for, which the parser reports.
 type Hole struct {
 	P token.Pos
-	// Slot is which argument: 0 for `_`, `it` and `this`, 1 for `that`.
+	// Slot is which argument: 0 for `_` and `this`, 1 for `that`.
 	Slot int
-	// Half is which part of that argument: HoleWhole for all of it, 0 for
-	// `former` and 1 for `latter`.
-	Half int
+	// Parts is how wide a Twine this word names a component of, and At is
+	// which component. A word that names the argument whole has Parts 0.
+	//
+	// Both are fixed by the word itself and by nothing else, which is the whole
+	// point. Two earlier spellings named a component *relative* to a width —
+	// "the latter of two", "the last of however many" — and a relative word
+	// cannot be desugared until the type is known, which is later than the
+	// parser and, in some positions, later than it can be asked for at all. So
+	// a word carries its width: `former` and `latter` are the halves of a
+	// Twine of two, `fore`, `mid` and `aft` the three parts of a Twine of
+	// three, and there is no word for a component of a wider one — that is a
+	// pattern, and says so.
+	Parts, At int
 }
 
-// HoleWhole is the Half of a hole that names its argument entire.
-const HoleWhole = -1
-
-// The names a filled Hole is given. Patterns spell `_` as PWild and the other
-// three are keywords, so none can collide with anything a program writes.
+// The names a filled Hole is given. Patterns spell `_` as PWild and the rest
+// are keywords, so none can collide with anything a program writes.
 const (
 	HoleName    = "_"
 	PartnerName = "that"
 	FormerName  = "former"
 	LatterName  = "latter"
+	ForeName    = "fore"
+	MidName     = "mid"
+	AftName     = "aft"
 )
 
-// HoleVarName is the name the hole spelled by slot and half is bound to.
-func HoleVarName(slot, half int) string {
-	switch {
-	case half == 0:
-		return FormerName
-	case half == 1:
-		return LatterName
-	case slot == 1:
+// partNames is what each width calls its components, in order.
+var partNames = map[int][]string{
+	2: {FormerName, LatterName},
+	3: {ForeName, MidName, AftName},
+}
+
+// PartNames is what a Twine of this width calls its components, or nil when
+// nothing does.
+func PartNames(parts int) []string { return partNames[parts] }
+
+// HoleVarName is the name the hole spelled by these is bound to.
+func HoleVarName(slot, parts, at int) string {
+	if names := partNames[parts]; at < len(names) {
+		return names[at]
+	}
+	if slot == 1 {
 		return PartnerName
 	}
 	return HoleName
@@ -544,9 +582,12 @@ func dump(sb *strings.Builder, n Node, depth int) {
 	case *Let:
 		line("(let")
 		for _, b := range n.Binds {
-			if len(b.Params) > 0 {
+			switch {
+			case b.Pat != nil:
+				line("  (weave-pattern %s", patternString(b.Pat))
+			case len(b.Params) > 0:
 				line("  (channel %s (%s)", b.Name, patternList(b.Params))
-			} else {
+			default:
 				line("  (weave %s", b.Name)
 			}
 			dump(sb, b.Value, depth+2)
@@ -700,6 +741,12 @@ func FreeVars(e Expr, bound map[string]bool, out map[string]bool) {
 				BindPatternVars(p, valueScope)
 			}
 			FreeVars(b.Value, valueScope, out)
+			if b.Pat != nil {
+				// A binding that takes its value apart cannot refer to itself,
+				// and every name in the pattern is in scope from here on.
+				BindPatternVars(b.Pat, inner)
+				continue
+			}
 			inner[b.Name] = true
 		}
 		FreeVars(e.Body, inner, out)
@@ -748,16 +795,34 @@ type HoleUse struct {
 	// Args is how many arguments the group takes: 1 normally, 2 once a `that`
 	// appears.
 	Args int
-	// Opened is set when a `former` or `latter` appeared, so the first
-	// argument is bound as the two halves of a Twine rather than whole.
-	Opened bool
+	// Parts is how wide the first argument is taken apart: 0 to leave it whole,
+	// and otherwise the width the words used name the components of.
+	Parts int
+	// Clashed says a second word asked for a different width, which is a group
+	// that cannot mean anything — `add former aft` says two and three in the
+	// same breath. ClashAt is the word that disagreed.
+	Clashed bool
+	ClashAt token.Pos
+	// at is where the word that set Parts was.
+	at token.Pos
 }
 
 func (u HoleUse) merge(v HoleUse) HoleUse {
 	if v.Args > u.Args {
 		u.Args = v.Args
 	}
-	return HoleUse{u.Any || v.Any, u.Args, u.Opened || v.Opened}
+	u.Any = u.Any || v.Any
+	if v.Clashed && !u.Clashed {
+		u.Clashed, u.ClashAt = true, v.ClashAt
+	}
+	if v.Parts != 0 {
+		if u.Parts == 0 {
+			u.Parts, u.at = v.Parts, v.at
+		} else if u.Parts != v.Parts && !u.Clashed {
+			u.Clashed, u.ClashAt = true, v.at
+		}
+	}
+	return u
 }
 
 // Holes reports what the unclaimed holes in e ask of whatever claims them.
@@ -768,7 +833,7 @@ func (u HoleUse) merge(v HoleUse) HoleUse {
 func Holes(e Expr) HoleUse {
 	switch e := e.(type) {
 	case *Hole:
-		return HoleUse{Any: true, Args: e.Slot + 1, Opened: e.Half != HoleWhole}
+		return HoleUse{Any: true, Args: e.Slot + 1, Parts: e.Parts, at: e.P}
 	case *App:
 		return holesIn(append([]Expr{e.Fn}, e.Args...))
 	case *ThreadLit:
@@ -810,7 +875,7 @@ func holesIn(es []Expr) HoleUse {
 func FillHoles(e Expr) Expr {
 	switch e := e.(type) {
 	case *Hole:
-		return &Var{Name: HoleVarName(e.Slot, e.Half), P: e.P}
+		return &Var{Name: HoleVarName(e.Slot, e.Parts, e.At), P: e.P}
 	case *App:
 		e.Fn = FillHoles(e.Fn)
 		fillAll(e.Args)

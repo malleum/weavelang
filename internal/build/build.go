@@ -37,11 +37,19 @@ type Options struct {
 	CheckOverflow bool
 	// Verbose prints the C compiler command line.
 	Verbose bool
+	// Tally compiles the arena to keep its own books and print, on exit, what
+	// was holding the heap at its high-water mark and where it was allocated.
+	// The bookkeeping costs more than the allocation, so a tallied build says
+	// nothing about speed.
+	Tally bool
 	// DisableFusion compiles Thread chains one runtime call per stage.
 	DisableFusion bool
 	// DisableSpecialize keeps the general prelude verbs instead of the typed
 	// helpers the inferred types allow.
 	DisableSpecialize bool
+	// DisableRegions keeps a fused loop turn's storage instead of handing it
+	// back when the turn ends.
+	DisableRegions bool
 	// DisableInPlace makes every grid update copy.
 	DisableInPlace bool
 	// DisableRelease keeps every Thread a function builds instead of handing
@@ -50,6 +58,9 @@ type Options struct {
 	// Trace compiles the program to report every top-level definition's value
 	// rather than its output expression. See `weave trace`.
 	Trace bool
+	// Watch names one function whose calls are recorded, so that the inside of
+	// a recursion can be read the way the outside already can. Trace only.
+	Watch string
 	// Lenient lets the build proceed past a soft diagnostic — a definition
 	// that does not cover every case, which compiles to a runtime trap. The
 	// REPL sets it so that a definition can be entered one clause at a time.
@@ -85,7 +96,9 @@ func Compile(path, src string, opts Options, bag *diag.Bag) (*Result, error) {
 		DisableSpecialize: opts.DisableSpecialize,
 		DisableInPlace:    opts.DisableInPlace,
 		DisableRelease:    opts.DisableRelease,
+		DisableRegions:    opts.DisableRegions,
 		Trace:             opts.Trace,
+		Watch:             opts.Watch,
 	})
 	if !bag.Empty() {
 		return nil, fmt.Errorf("code generation failed")
@@ -169,6 +182,21 @@ func Compile(path, src string, opts Options, bag *diag.Bag) (*Result, error) {
 func runtimeFor(work, cc, opt string, opts Options) (string, []string, error) {
 	files := rt.Files()
 	defs := defines(opts)
+	sources := rt.CSources
+	if opts.Tally {
+		sources = append(append([]string{}, sources...), rt.TallySource)
+	}
+
+	// A cache that cannot be made is not a reason to fail: caching is an
+	// optimisation, and the build has a perfectly good uncached path. Sandboxes
+	// that run the tests with no writable home — Nix's builder is the one that
+	// found this — would otherwise fail every build for the sake of a directory
+	// nothing needed.
+	if opts.CacheDir != "" {
+		if err := os.MkdirAll(opts.CacheDir, 0o755); err != nil {
+			opts.CacheDir = ""
+		}
+	}
 
 	if opts.CacheDir == "" {
 		for name, content := range files {
@@ -176,8 +204,8 @@ func runtimeFor(work, cc, opt string, opts Options) (string, []string, error) {
 				return "", nil, err
 			}
 		}
-		inputs := make([]string, 0, len(rt.CSources))
-		for _, name := range rt.CSources {
+		inputs := make([]string, 0, len(sources))
+		for _, name := range sources {
 			inputs = append(inputs, filepath.Join(work, name))
 		}
 		return work, inputs, nil
@@ -200,8 +228,8 @@ func runtimeFor(work, cc, opt string, opts Options) (string, []string, error) {
 		}
 	}
 
-	inputs := make([]string, 0, len(rt.CSources))
-	for _, name := range rt.CSources {
+	inputs := make([]string, 0, len(sources))
+	for _, name := range sources {
 		obj := filepath.Join(dir, strings.TrimSuffix(name, ".c")+".o")
 		if _, err := os.Stat(obj); err != nil {
 			argv := append([]string{opt, "-std=c11", "-w", "-I", dir}, defs...)
@@ -224,6 +252,9 @@ func defines(opts Options) []string {
 	var out []string
 	if opts.CheckOverflow {
 		out = append(out, "-DWEAVE_CHECK_OVERFLOW")
+	}
+	if opts.Tally {
+		out = append(out, "-DWEAVE_TALLY")
 	}
 	return out
 }

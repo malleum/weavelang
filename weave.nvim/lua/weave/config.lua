@@ -20,9 +20,23 @@ local defaults = {
   --- that is not Weave source.
   input_patterns = { "*.txt", "*.in", "*.input", "input*" },
 
-  --- Give up on a program that will not finish. Tracing evaluates every
-  --- definition, including ones the answer does not depend on.
+  --- Give up on a definition that will not finish. Tracing evaluates every
+  --- definition, including ones the answer does not depend on. One that runs
+  --- past this shows an hourglass instead of a value, and the rest of the file
+  --- is traced without it — so a slow part two costs its own ghost text and
+  --- nobody else's.
   timeout_ms = 5000,
+
+  --- The same bargain for memory: a definition that asks for more than this
+  --- many megabytes is stopped and shows `⊘`. A half-written definition is as
+  --- likely to allocate the whole machine as it is to loop for ever, and this
+  --- is running on every save.
+  memory_mb = 6144,
+
+  --- How wide one cell of the call window may be. A recursion is read by
+  --- comparing calls, which wants columns that line up more than it wants any
+  --- one value in full. See :WeaveCalls.
+  call_width = 28,
 
   --- What the ghost text looks like.
   prefix = "  = ",

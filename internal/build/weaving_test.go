@@ -39,7 +39,7 @@ safe n is Woven n
 			name: "a Weaving prints as it was written",
 			src: `[Woven 1, Gentled "oh"]
 `,
-			want: "Woven 1\nGentled oh",
+			want: "Woven 1\nGentled \"oh\"",
 		},
 		{
 			name: "equality is structural",
@@ -51,7 +51,7 @@ safe n is Woven n
 			name: "success sorts before failure",
 			src: `[Gentled "b", Woven 1, Gentled "a", Woven 0] | sort
 `,
-			want: "Woven 0\nWoven 1\nGentled a\nGentled b",
+			want: "Woven 0\nWoven 1\nGentled \"a\"\nGentled \"b\"",
 		},
 		{
 			name: "a Weaving works as a Web key",

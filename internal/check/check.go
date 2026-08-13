@@ -27,6 +27,15 @@ type Info struct {
 	Types map[ast.Expr]types.Type
 	// Decls holds the generalised type of each top-level definition.
 	Decls map[string]*types.Scheme
+	// Binds records the type given to a name where it is bound, keyed by the
+	// position of the name itself.
+	//
+	// Types covers uses, which is what the backend needs, and a name that is
+	// bound is not a use of itself — so an editor asked what a parameter is
+	// has nothing to answer with until the parameter is used somewhere, which
+	// is exactly backwards from when the question gets asked. This is every
+	// binder: parameters, `weave` names, and the names a pattern takes apart.
+	Binds map[token.Pos]types.Type
 	// Output is the type of the program's result expression, if it has one.
 	Output types.Type
 }
@@ -58,10 +67,27 @@ type checker struct {
 	// numbers are the variables standing in for number literals that have not
 	// been decided yet. See settleNumbers.
 	numbers []*types.Var
+	// strands are the container/element pairs of `nth`, `first` and `last`
+	// that are not decided yet. See settleStrands.
+	strands []strand
+}
+
+// strand is one undecided container/element pair, and where it was asked for
+// so that a mismatch can be reported at the call rather than at the definition.
+type strand struct {
+	held, elem *types.Var
+	pos        token.Pos
+	verb       string
 }
 
 // File type-checks f, reporting problems into bag.
 func File(f *ast.File, bag *diag.Bag) *Info {
+	// A definition that takes its value apart binds several names from one
+	// expression, and every phase from here on is built around a definition
+	// being one name. See ast/expand.go. The formatter reads the parse tree and
+	// so still sees what was written.
+	ast.ExpandPatterns(f)
+
 	c := &checker{
 		bag:   bag,
 		alloc: &types.Alloc{},
@@ -69,6 +95,7 @@ func File(f *ast.File, bag *diag.Bag) *Info {
 		info: &Info{
 			Types: map[ast.Expr]types.Type{},
 			Decls: map[string]*types.Scheme{},
+			Binds: map[token.Pos]types.Type{},
 		},
 	}
 	c.typeArity = make(map[string]int, len(builtinTypeArity))
@@ -156,35 +183,53 @@ func (c *checker) schemeFromSig(sig, where string) (*types.Scheme, error) {
 	}
 	vars := map[string]*types.Var{}
 	body := c.typeFromAST(te, vars, 1, nil)
-	if err := applyConstraints(where, vars); err != nil {
+	strands, err := applyConstraints(where, vars)
+	if err != nil {
 		return nil, err
 	}
-	return types.Generalize(0, body), nil
+	sch := types.Generalize(0, body)
+	sch.Strands = strands
+	return sch, nil
 }
 
 // applyConstraints attaches Talent constraints such as "Ord a" to the named
 // type variables of a signature.
-func applyConstraints(where string, vars map[string]*types.Var) error {
+func applyConstraints(where string, vars map[string]*types.Var) ([][2]*types.Var, error) {
+	var strands [][2]*types.Var
 	for _, clause := range strings.Split(where, ",") {
 		clause = strings.TrimSpace(clause)
 		if clause == "" {
 			continue
 		}
 		fields := strings.Fields(clause)
+		// `Strand c e` relates two types rather than describing one, so it is
+		// not a Talent and is kept beside them. See settleStrands.
+		if len(fields) == 3 && fields[0] == "Strand" {
+			held, ok := vars[fields[1]]
+			if !ok {
+				return nil, fmt.Errorf("Strand names unknown type variable %q", fields[1])
+			}
+			elem, ok := vars[fields[2]]
+			if !ok {
+				return nil, fmt.Errorf("Strand names unknown type variable %q", fields[2])
+			}
+			strands = append(strands, [2]*types.Var{held, elem})
+			continue
+		}
 		if len(fields) != 2 {
-			return fmt.Errorf("malformed constraint %q", clause)
+			return nil, fmt.Errorf("malformed constraint %q", clause)
 		}
 		set, ok := talentByName(fields[0])
 		if !ok {
-			return fmt.Errorf("unknown Talent %q", fields[0])
+			return nil, fmt.Errorf("unknown Talent %q", fields[0])
 		}
 		v, ok := vars[fields[1]]
 		if !ok {
-			return fmt.Errorf("constraint names unknown type variable %q", fields[1])
+			return nil, fmt.Errorf("constraint names unknown type variable %q", fields[1])
 		}
 		v.Talents |= set
 	}
-	return nil
+	return strands, nil
 }
 
 func talentByName(name string) (types.TalentSet, bool) {
@@ -200,6 +245,8 @@ func talentByName(name string) (types.TalentSet, bool) {
 		return types.Reckon, true
 	case "Bulk":
 		return types.Bulk, true
+	case "Ply":
+		return types.Ply, true
 	}
 	return 0, false
 }
@@ -212,7 +259,7 @@ var builtinTypeArity = map[string]int{
 	types.Earth: 0, types.Water: 0, types.Fire: 0, types.Air: 0,
 	types.Spirit: 0, types.KnotCon: 0,
 	types.ThreadCon: 1, types.PatternCon: 1, types.CircleCon: 1,
-	types.TaverenCon: 1, types.HoldCon: 1,
+	types.TaverenCon: 1, types.HoldCon: 1, types.LinkCon: 1,
 	types.WebCon: 2, types.WeavingCon: 2,
 }
 
@@ -310,9 +357,10 @@ func (c *checker) inferTopLevel(f *ast.File) {
 	// Every bare expression is checked and has to be showable, since `weave
 	// trace` renders each of them. Only the last is the program's output.
 	for _, out := range f.Outputs {
-		mark := len(c.numbers)
+		mark, strandMark := len(c.numbers), len(c.strands)
 		t := c.infer(out, c.global)
 		c.settleNumbers(mark)
+		c.settleStrands(strandMark)
 		c.require(out.Pos(), t, types.Show, "a program's output")
 		c.info.Output = t
 	}
@@ -338,11 +386,43 @@ func (c *checker) settleNumbers(mark int) {
 	c.numbers = c.numbers[:mark]
 }
 
+// settleStrands commits the container/element pairs recorded since mark.
+//
+// `nth`, `first` and `last` answer with an *element*, and what an element is
+// depends on what it was taken out of: a Thread of `a` holds an `a`, and some
+// text holds a Fire. That is a relation between two types rather than a
+// property of one, so no Talent can say it — which is why `Ply` carries `take`,
+// `drop`, `sever` and `rev`, whose result is the same shape as their argument,
+// and stops short of these three.
+//
+// So the pair is carried instead, and settled once unification has had its say.
+// Text is the special case and everything else reads as a Thread, which is what
+// the language did before and what a reader expects: the answer to `first xs`
+// where nothing says what `xs` is should be the answer it has always been.
+//
+// It runs where settleNumbers runs, and for the same reason: nothing may be
+// generalised while still undecided.
+func (c *checker) settleStrands(mark int) {
+	for _, st := range c.strands[mark:] {
+		if con, known := types.Resolve(st.held).(*types.Con); known && con.Name == types.Air {
+			_ = types.Unify(st.elem, types.TFire)
+			continue
+		}
+		thread := &types.Con{Name: types.ThreadCon, Args: []types.Type{st.elem}}
+		if err := types.Unify(st.held, thread); err != nil {
+			c.bag.AddHint(st.pos,
+				fmt.Sprintf("`%s` reads an element out of a Thread or out of some text", st.verb),
+				"`%s`: %s", st.verb, err)
+		}
+	}
+	c.strands = c.strands[:mark]
+}
+
 // inferGroup infers one mutually recursive set of definitions together, then
 // generalises them as a unit.
 func (c *checker) inferGroup(group []*ast.Decl, byName map[string]*ast.Decl) {
 	c.level++
-	mark := len(c.numbers)
+	mark, strandMark := len(c.numbers), len(c.strands)
 
 	// Assume a monomorphic type for each member while inferring the group.
 	assumed := map[string]types.Type{}
@@ -364,6 +444,7 @@ func (c *checker) inferGroup(group []*ast.Decl, byName map[string]*ast.Decl) {
 
 	// Before generalising: a literal that nothing pinned down is an Earth.
 	c.settleNumbers(mark)
+	c.settleStrands(strandMark)
 
 	c.level--
 
@@ -457,7 +538,11 @@ func (c *checker) inferRaw(e ast.Expr, sc *scope) types.Type {
 			c.bag.AddHint(e.P, suggest(e.Name, sc.visible()), "cannot find `%s`", e.Name)
 			return c.alloc.Fresh(c.level)
 		}
-		return c.alloc.Instantiate(sch, c.level)
+		t, pairs := c.alloc.InstantiateStrands(sch, c.level)
+		for _, pair := range pairs {
+			c.strands = append(c.strands, strand{held: pair[0], elem: pair[1], pos: e.P, verb: e.Name})
+		}
+		return t
 
 	case *ast.Ctor:
 		sch, ok := sc.lookup(e.Name)
@@ -523,12 +608,31 @@ func (c *checker) inferRaw(e ast.Expr, sc *scope) types.Type {
 // inferBind handles one `weave` or `channel` binding, generalising it so that
 // later code can use it at several types.
 func (c *checker) inferBind(b *ast.Bind, sc *scope) *scope {
+	// A binding that takes its value apart binds several names at once and
+	// none of them can be recursive, so there is nothing to generalise and
+	// nothing to bind ahead of the value. The pattern is checked against the
+	// value's type exactly as a parameter's is.
+	if b.Pat != nil {
+		t := c.infer(b.Value, sc)
+		out := sc.child()
+		c.checkPattern(b.Pat, t, out)
+		// One pattern and no alternative, so it has to cover everything the
+		// value could be. A `ward` with one arm is held to the same rule and
+		// reports the same way — softly, since the code traps rather than doing
+		// something undefined, and the REPL is written a line at a time.
+		if witness, missing := c.missingCase([][]ast.Pattern{{b.Pat}}, []types.Type{t}); missing {
+			c.reportMissing(b.Pos(), "this binding", witness)
+		}
+		return out
+	}
+
 	inner := sc.child()
 	c.level++
 
 	self := c.alloc.Fresh(c.level)
 	// Bind the name before inferring the value so a `channel` can recurse.
 	inner.bind(b.Name, types.Mono(self))
+	c.info.Binds[b.NamePos] = self
 
 	var t types.Type
 	if len(b.Params) > 0 {
@@ -552,7 +656,15 @@ func (c *checker) inferBind(b *ast.Bind, sc *scope) *scope {
 }
 
 // inferApp types a call: the callee, then one argument at a time.
+//
+// Any Strand pair the call brought in is settled before it returns, so that
+// `first xs` constrains `xs` to a Thread there and then unless the text case
+// applies — which is what keeps the error for a mismatch where the mistake is
+// rather than at the end of the definition. See settleStrands.
 func (c *checker) inferApp(e *ast.App, sc *scope) types.Type {
+	strandMark := len(c.strands)
+	defer func() { c.settleStrands(strandMark) }()
+
 	fnT := c.infer(e.Fn, sc)
 	for _, arg := range e.Args {
 		argT := c.infer(arg, sc)
@@ -571,6 +683,23 @@ func (c *checker) inferApp(e *ast.App, sc *scope) types.Type {
 func (c *checker) reportApply(app *ast.App, arg ast.Expr, fnT, argT types.Type, err error) {
 	callee := calleeName(app.Fn)
 	at := blame(app, arg)
+
+	// The collection verbs name their collection *first* — `put w k v` against
+	// `bend f xs` — which is what lets a Web thread through a fold, and it is
+	// the one place the pipeline style stops. Piping a Web into `put` then
+	// fails at the verb's *first* argument, complaining that the type it wanted
+	// there has no Reckon Talent, which says nothing at all about what went
+	// wrong. Say what went wrong.
+	if verb, isVar := app.Fn.(*ast.Var); isVar && app.Via != "" && len(app.Args) > 0 && arg == app.Args[0] {
+		if fn, isFn := types.Resolve(fnT).(*types.Fn); isFn {
+			if con, isCon := types.Resolve(fn.From).(*types.Con); isCon && dataFirst[con.Name] {
+				c.bag.AddHint(at, fmt.Sprintf(
+					"the collection verbs take the collection before the rest — `put w k v`, `insert c x` — which is what lets one thread through a fold. Write the call out, or pipe in whatever comes *last*: `v | %s w k`", verb.Name),
+					"%s names its %s first, so a pipeline cannot feed it", callee, con.Name)
+				return
+			}
+		}
+	}
 
 	// A Talent violation carries its own explanation, which is far more useful
 	// than the shapes that failed to line up.
@@ -609,6 +738,17 @@ func (c *checker) reportApply(app *ast.App, arg ast.Expr, fnT, argT types.Type, 
 		return
 	}
 	c.bag.Add(at, "%s", err)
+}
+
+// dataFirst names the collections whose verbs take them before their other
+// arguments, so that a pipeline cannot feed one. The sequence convention is the
+// other way round — `mend i x xs` — which is why a Thread is not here.
+var dataFirst = map[string]bool{
+	types.WebCon:     true,
+	types.CircleCon:  true,
+	types.PatternCon: true,
+	types.TaverenCon: true,
+	types.LinkCon:    true,
 }
 
 // blame picks where to point a failed application.
@@ -678,6 +818,7 @@ func (c *checker) checkPattern(p ast.Pattern, want types.Type, sc *scope) {
 			c.bag.Add(p.P, "`%s` is bound twice in the same pattern", p.Name)
 		}
 		sc.bind(p.Name, types.Mono(want))
+		c.info.Binds[p.P] = want
 
 	case *ast.PInt:
 		c.unify(p.P, want, types.TEarth, "this pattern")

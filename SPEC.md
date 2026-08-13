@@ -45,18 +45,23 @@ Code with minimal syntax and One-Power-themed vocabulary. It compiles to C
 - **The entire symbol set:** `is = | : :: -> , [ ] { } ( ) _ " ' #`
   (`->` appears only inside `::` type signatures.)
 - **The punctuation has a word spelling**, and the words are what the language
-  is for: `is` for `=`, `gives` for `:`, `through` for `|`, `this` for `_`. They
-  are the same tokens, so a line ending in `gives` opens a block exactly as one
-  ending in `:` does. **`weave fmt` prints the words**; `weave fmt -terse`
-  prints the symbols, and either can be read back. Each word was chosen because
-  it could never be a verb, which is the rule that had `of`, `at` and `from`
-  cut.
+  is for: `is` for `=`, `gives` for `:`, `through` for `|`, `this` for
+  `_`. They are the same tokens, so a line ending in `gives` opens a block
+  exactly as one ending in `:` does. **`weave fmt` prints the words**;
+  `weave fmt -terse` prints the symbols, and either can be read back. Each word
+  was chosen because it could never be a verb, which is the rule that had `of`,
+  `at` and `from` cut.
+- **Eight words have no symbol at all**: `that` names the second argument a
+  bracket group can be handed, and `former`/`latter` and `fore`/`mid`/`aft` name
+  the components of the first (§10.1a); `else` and `failing` are particles
+  carrying a verb of their own (§14).
 
 ```weave
 [1 2 3] | bend (x gives mul x x) | sum
 ```
-- **Keywords:** `weave channel ward into where as through remember` + type and
-  constructor names. `pick` and `flow` are ordinary identifiers bound to
+- **Keywords:** `weave channel ward into where as through else failing
+  remember` + the word spellings `is gives this that former latter fore mid aft`, and
+  type and constructor names. `pick` and `flow` are ordinary identifiers bound to
   builtins, so they stay usable as pipeline stages and arguments.
 - **`is` and `=` are interchangeable** as the binder; `is` is idiomatic.
 
@@ -67,7 +72,7 @@ Indentation opens a block only after something that wants one: a line ending in
 else a deeper line **continues** the line above, so an application can span
 lines:
 
-```weave
+```weave-part
 pick (member seen k)
   (walk rest seen)
   (walk (push rest k) (join seen k))
@@ -76,11 +81,11 @@ pick (member seen k)
 A line that opens with `|`, `where`, `as` or `through` continues the line above
 too, so a long pipeline can breathe:
 
-```weave
+```weave-part
 nums is
   Source
     | lines
-    | bend earth
+    | glean earth
     where gt 10
 ```
 
@@ -153,14 +158,80 @@ All are **unboxed** (raw `i64`/`f64`/`i32`/pointer/`i1`) — never heap-allocate
 ## 5. Built-in types
 
 ### 5.1 `Thread a` — the sequence
-The core iterable. Verb chains (`bend | sift | seek | …`) **fuse** into a single
-pass with no intermediate Thread at all; a terminal verb (`braid`, `count`,
-`len`, `sum`, `seek`) ends it, and one that can answer early — `seek`, `first`,
-`any`, `all` — stops the whole chain there.
+The core iterable. Verb chains **fuse** into a single pass with no intermediate
+Thread at all. Exactly which verbs, since it decides what an endless chain may
+be made of:
+
+- **Producers** — a Thread, `span`, `zip`, `zipwith`, `items`, `enum`,
+  `couples`, the grid walks `knots`, `nb4`, `nb8`, `around4` and `around8`, and
+  the two endless ones, `flow` and `cycle`.
+- **Stages** — `bend`, `sift`, `cull`, `take`, `takewhile`, `drop`,
+  `dropwhile`, and `scan`, which is a `bend` carrying an accumulator.
+- **Consumers** — `braid`, `sum`, `prod`, `len`, `count`, and the ones that can
+  answer early: `seek`, `first`, `any`, `all`, `dupe`, `gentle`.
+
+Anything else in a chain ends the fusion and builds the Thread. An early
+answer stops the whole chain where it is, which is what lets `flow` and `cycle`
+be consumed at all (§5.1.1).
+
+A chain fuses when there is something to save, and there are three ways for
+that to be true. Two stages save the Thread between them. A **generated**
+producer — a `span`, or one of the grid walks — saves the array it would have
+built, so one stage is enough and a bare consumer is enough too: `nb8 g k |
+count (eq '#')` builds no eight-element Thread per cell. And a **lambda written
+on the spot** saves the closure: the loop inlines it, so `xs | bend (x : mul x
+x)` fuses where `xs | bend twice` does not, because there the runtime verb was
+going to call the function either way.
+
+`nb4` and `nb8` are the one exception, and only under a fold: the accumulator
+may be the very Pattern being read, and writing through it (§13) would then be
+seen by the rest of the walk. The verb copies its four or eight values out
+first, so it keeps the meaning the fused loop could not.
 
 A Thread is a strict vector, so `flow` is not one you can hold.
 
+**What a fused `gentle` costs.** A `gentle` is Weave's loop, and the loop it
+compiles to builds nothing per turn. Its step is compiled in *statement*
+position — `Woven x` assigns the accumulator, `Gentled y` assigns the answer and
+sets a flag — so the Weaving the loop would otherwise build and take straight
+back apart on the same turn never exists; it is put together once when the loop
+ends, because `gentle` answers with one and `failing` reads which case it was.
+An accumulator that is a Twine of state is carried one component to a variable,
+for the same reason and with the same shape: the step takes it apart on the way
+in and writes it out on the way out, so the Twine between those two is a thing
+nobody ever looks at. The trampoline walk of Advent of Code 2017 day 5 went from
+2.9 GB and four allocations a turn to **51.7 KB and nine allocations for the
+whole program**.
+
+Two limits, stated plainly because a step outside them compiles exactly as it
+did: a step ending in a `ward` is not split, and neither is one handing on a
+Twine it did not write out on the spot.
+
+**What a fused fold hands back.** A turn of a fold whose whole storage is dead
+when the turn ends gives it back: the arena is a bump pointer, so the loop marks
+where it has got to, lets the turn allocate what it likes, and puts the pointer
+back. That is the only thing that helps a *backtracking* search, which uses the
+collection it was handed once per **option** — the old value has to survive for
+the next branch, so it is genuinely not single-threaded and §13 will never bless
+it. Advent of Code 2025 day 10 went from 893 ms and 297 MB to **98 ms and 7 MB**.
+
+The condition is that nothing allocated during a turn may be reachable after it,
+and four things have to hold for that: the accumulator is an unboxed Power, so
+what deliberately outlives the turn carries no pointer into it; the elements
+likewise; no stage holds state across turns, since `scan` and `dupe` keep
+exactly what a release would take; and nothing reachable stores into a global,
+of which a program has two — a `remember` table, which rules the loop out, and
+the memoised accessor a top-level value compiles to, which is forced before the
+region opens. Anything that cannot be shown to satisfy all four is compiled as
+it was. `weave build -no-regions` turns it off.
+
 ### 5.1.0 Indexing, membership and editing
+`span lo hi` names both ends and includes both, because an input that writes a
+range writes `11-22`. When what you want is the *places* of n things rather than
+a range between two numbers, that is `under n` — zero up to but not including
+n — and `copies n x` is a Thread of the same value that many times, which is
+`repeat` for a Thread rather than for text.
+
 A Thread is a strict array, so position is a load: `nth i xs` answers with a
 `Hold` because most indices are out of bounds most of the time, and `has x xs`
 tests membership. `idx x xs` is the position of the first match.
@@ -168,20 +239,28 @@ tests membership. `idx x xs` is the position of the first match.
 `weld ys xs` is xs with ys on the end, which is also how you append one
 (`weld [x] xs`) and prepend one (`weld xs [x]`). `mend i x xs` replaces a
 position, leaving the Thread alone when there is no such position, the way `set`
-does for a grid. `sever n xs` cuts in two and hands back both halves. None of
+does for a grid, and `twist i f xs` is `mend` when the new value is worked out
+from the old one. `sever n xs` cuts in two and hands back both halves. None of
 them changes the Thread you gave: a Thread is a value, and the compiler decides
 separately whether the old one is still needed (§13).
+
+Asking *where* rather than *what* has both halves throughout. `idx x xs` is the
+first position a value lies at and `idxs x xs` every one; `seekidx p xs` is the
+first position passing a test and `siftidx p xs` every one; `highidx` and
+`lowidx` are where `high` and `low` found what they found, which asking `idx`
+afterwards would answer wrongly when the value repeats.
 
 ### 5.1.1 `flow` and `cycle` — the endless Threads
 `flow f seed` is `seed, f seed, f (f seed), …`, and `cycle xs` is `xs` over and
 over. Neither ends. Neither is ever built: the loop that consumes one holds a
 single element at a time, so it must be created and consumed in the same
 pipeline, and something must stop it — `take n`, `takewhile p`, `seek p`,
-`first`, `any p` or `all p`.
+`first`, `any p`, `all p`, `dupe` or `gentle`.
 
-```weave
+```weave-part
 flow (mul 2) 1 | seek (gt 1000)          # Held 1024
 cycle [1 2 3] | take 7 | sum             # 13, the wrap-around for free
+cycle [1 2 3] | scan add 0 | dupe        # the first running total seen twice
 flow next 27 | takewhile (neq 1) | len   # the Collatz chain from 27
 flow ((a, b) : (b, add a b)) (0, 1)
   | bend fst
@@ -197,7 +276,36 @@ of Fires, and `weft fill rows` weaves one out of rows of whatever you have, so
 `Source | lines | bend earths | weft 0` is a Pattern of Earths. `cell`, `set`,
 `cellwise`, `knots`,
 `cells`, `rows`, `cols`, `shape`, `inb`; `nb4`/`nb8` for neighbouring cells and
-`around4`/`around8` for their knots. Built from text via `pattern Source`.
+`around4`/`around8` for their knots; `sited`/`sites` for where a value is,
+which is `cell` asked the other way round. Built from text via `pattern Source`.
+
+`weft fill rows` weaves rows you already have. `warp f rows cols` is the other
+constructor: given the shape and a function from a knot to what belongs there,
+it lays a grid out before anything is on it — a board, a distance table, a mask.
+Written by hand that is a `span` inside a `span` inside a `weft`, plus a fill
+value nothing will ever read.
+
+`tallies g` is the running total over a grid — every cell replaced by the total
+of the box from the top left corner to it — and `tallied t a b` reads a box back
+out of one. Asked once, every "how much is inside this box" afterwards is a
+single subtraction whatever the box's size. Three of the four corners sit one
+row or one column *before* the box, which is what a hand-written version has to
+pad for; `tallied` owns them, so nothing needs a border of zeroes, the knots may
+be given either way round, and a box running off the grid is clipped rather than
+wrong.
+
+```weave
+g is [[1, 2, 3], [4, 5, 6], [7, 8, 9]] | weft 0
+
+t is tallies g
+
+[tallied t (knot 1 1) (knot 2 2), tallied t (knot 0 0) (knot 2 2)]
+  | bend air
+  | join " "
+```
+```
+28 45
+```
 
 ### 5.3 `Web k v` — the map/dict
 Associations, as a hash array mapped trie: 32-way branching with path copying,
@@ -205,7 +313,11 @@ so an insert touches about four nodes for a million entries and building a Web
 inside a fold stays linear. A Web the compiler has proved unshared (§13) whose
 keys are immediates — `Earth`, `Knot`, `Fire`, `Spirit` — is instead a flat
 open-addressed table, which is the same map with none of the trie's cost; it
-becomes a trie again the moment it is used persistently. `get`, `put`, `known`,
+becomes a trie again the moment it is used persistently. When the values are
+unboxed as well, that table packs a slot down to two raw payloads with one
+shared tag per column — sixteen bytes rather than thirty-two, and a probe that
+is one `int64` compare — and widens back to tagged slots the moment anything
+disagrees. `get`, `put`, `known`,
 `forget`, `keys`, `vals`, `items`, `merge`, `mapvals`, `freq`, `most`.
 
 `keys`, `vals` and `items` come back in ascending key order. A map has no order
@@ -215,32 +327,94 @@ on what it put in rather than on how the runtime happened to store it.
 ### 5.4 `Circle a` — the set
 Unique members, sharing the Web's storage — both representations and the
 ordering guarantee. `circle`, `member`, `insert`, `remove`, `members`, `union`,
-`inter`, `diff`.
+`inter`, `diff`, and `covers outer inner` for containment — the question the
+other three left unasked, and `within`'s counterpart for a range.
 
 ### 5.5 `Taveren a` — the priority queue (min-heap)
 A leftist heap: `push` and `pop` are both O(log n) merges, and nothing is
 copied. `pop` → `Hold (a, Taveren a)`. Ordered by `Ord` (§11). For Dijkstra
 and cost-BFS.
 
+### 5.5a `Link a` — who is joined to whom
+Disjoint sets over the nodes it was built from. `link xs` puts every node in a
+circle of its own; `bind l a b` joins the circles holding two of them; `bound l
+a b` asks whether two are together yet; `clumped l` hands back the circles, each
+once, in the order their first member was given.
+
+It is the one graph question `clumps` cannot answer. `clumps` is asked once, of
+a finished graph. A Link is asked *while* the joining happens — which is what
+Kruskal's algorithm needs, and every minimum-spanning-tree puzzle with it.
+
+```weave
+l is link [1, 2, 3, 4, 5]
+
+joined is bind (bind l 1 2) 4 5
+
+[air (bound joined 1 2), air (bound joined 1 3), air (clumped joined | bend len)]
+  | join " "
+```
+```
+Light Shadow [2 1 2]
+```
+
+Binding hands back a new Link and leaves the old one alone, like everything
+else here. Which values exist never changes, so a bind copies only the two
+small arrays that say who answers to whom — eight bytes a node — and a Link
+threaded single-threadedly through a loop (§13) copies nothing at all. A node
+the Link was not built with does not exist: binding it does nothing, and it is
+bound only to itself.
+
 ### 5.6 `Knot` — a grid coordinate
 `knot row col`; accessors `row` and `col`, and `mdist` for the distance between two.
 
 ### 5.7 `Hold a` — Option, `Held a | Stilled`
 Replaces null. `Held` = holding a value; `Stilled` = severed, nothing here.
-`otherwise d` unwraps with default; `holds` tests presence. The *type* is
-`Hold a`; `Held` and `Stilled` are its two constructors.
+`otherwise d` unwraps with default — `else d` is the same thing as a particle
+(§14) — and `holds` tests presence. The *type* is `Hold a`; `Held` and
+`Stilled` are its two constructors.
+
+A `Held` costs nothing to build. A Value is a tag, four bytes that used to be
+padding, and eight bytes of payload, and a `Held` puts the inner tag in the
+spare four and keeps the value where it stands — for *anything*, bar a `Held` of
+a `Held`, which is the one case that needs a box. So `cell g k | otherwise 0`,
+which is most of how a program reads a grid, allocates nothing at all. The empty
+Thread costs nothing either: `else []` is how every program says "nothing was
+there", and it is one object for the whole program rather than a fresh header
+holding nothing each time it is said.
 
 ### 5.8 `Weaving a e` — Result, `Woven a | Gentled e`
-`Woven` = success; `Gentled e` = failed, severed with a reason. `rescue d`
-unwraps with a default, and a `ward` over the two cases is checked for
-exhaustiveness like any other sum type. Success sorts before failure, since
-`Woven` is declared first.
+`Woven` = success; `Gentled e` = failed, severed with a reason. A `ward` over
+the two cases is checked for exhaustiveness like any other sum type. Success
+sorts before failure, since `Woven` is declared first.
+
+Both sides come out with a default: `rescue d` takes the `Woven` value, and
+`snag d` takes the other — what the weaving stopped on. `failing d` is `snag`
+as a particle.
 
 ```weave
 divide _ 0 is Gentled "divide by zero"
 divide a b is Woven (div a b)
 
 divide 10 0 | rescue 0        # 0
+divide 10 0 failing "fine"    # "divide by zero"
+```
+
+`gentle` is the fold built on this. It is `braid` that may stop: the step
+answers `Woven acc` to carry on or `Gentled answer` to end the fold there, and
+the fold answers whichever it ended on. It short-circuits, so it can consume an
+endless chain (§5.1.1), and `snag` is how the answer comes back out.
+
+```weave
+deltas is [1, neg 2, 3, 1]
+
+deltas
+  through cycle
+  through scan add 0
+  through gentle (s n gives pick (member s n) (Gentled n) (Woven (insert s n))) (circle [0])
+  failing 0
+```
+```
+2
 ```
 
 ### 5.8.1 Taking a Thread apart in a pattern
@@ -334,7 +508,7 @@ dist (knot r1 c1) (knot r2 c2) is
 Inside a body, locals are introduced with `weave` / `channel`; the final,
 un-`is`'d expression is the return value. (This is where these two words live
 now that top level is bare.)
-```weave
+```weave-part
 busy g k is
   weave here is at g k
   ward here
@@ -342,10 +516,34 @@ busy g k is
     _        : Shadow
 
 solve is
-  weave nums is Source | lines | bend earth
+  weave nums is Source | lines | glean earth
   channel big n is gt 100 n
   nums | sift big | sum
 ```
+**A binding may take its value apart**, the way a parameter already could:
+
+```weave
+f p is
+  weave (a, b) is p
+  add a b
+
+(width, height) is (7, 3)
+
+[f (1, 2), mul width height]
+```
+
+A bare name is still a name — `weave x is 1` binds and does not match — so the
+shapes that count are the bracketed ones and `_`, which is what anyone reaches
+for. One pattern and no alternative means it has to cover everything the value
+could be, so a refutable one is the same soft diagnostic a one-armed `ward`
+gets: it compiles, and traps if the value does not match.
+
+The top-level form expands, between parsing and checking, into a hidden
+definition holding the whole value and one projection per name. A top-level
+value is a memoised accessor, so the expression runs once however many names
+read it, the dependency order falls out of the free variables, and the generated
+`ward` carries the exhaustiveness check.
+
 A `channel` may call itself, so a helper that recurses does not have to be
 lifted to the top level:
 
@@ -382,14 +580,26 @@ weave a is 1, b is 2 into add a b
 
 `x | f | g` == `g (f x)` — the value is fed as the **last** argument of each
 stage. This is canonical for `map | filter | seek`:
-```weave
-Source | lines | bend earth | sift (gt 10) | seek (divBy 3) | otherwise 0
+```weave-part
+Source | lines | glean earth | sift (gt 10) | seek (divBy 3) | otherwise 0
+```
+
+Four of the commonest stages have a particle of their own, and the same chain
+written with them is §14's business. `weave fmt` chooses between the two
+spellings by style rather than by what was typed, so a program comes back
+consistent either way:
+```weave-part
+Source through lines through glean earth where gt 10 through seek (divBy 3) else 0
 ```
 
 ## 9. Pattern matching — `ward`
 
+The arms go in an indented block, or bracketed on the `ward` line. The two are
+the same ward; which reads better is a question of length, and `weave fmt`
+keeps whichever was written for as long as it fits.
+
 ```
-ward EXPR
+ward EXPR                       ward EXPR (PATTERN : EXPR) (PATTERN : EXPR)
   PATTERN : EXPR
   PATTERN : EXPR
 ```
@@ -399,75 +609,100 @@ ward EXPR
   (`Held n`, `Woven x`, `Gentled e`), Twine and Knot destructuring (`(x, y)`,
   `knot r c`), and `_`.
 - The arrow is a single `:`.
-- A `ward` **owns an indented block**, so it cannot sit inside brackets (layout
-  is suspended there). To use one mid-expression, bind it first:
-  `weave r is ward x ... into f r`.
+- The **block form owns its indentation**, so it cannot sit inside brackets —
+  layout is suspended there. The bracketed form can, and is the only one an
+  expression has room for: `xs | bend (n gives ward (even n) (Light : n) (Shadow : 0))`.
+- A bracketed arm and a lambda are written identically, which is not a
+  coincidence: `(x : e)` means the same thing read either way. Position is what
+  separates them — inside a ward's head a bracketed group holding a `:` is an
+  arm, and everywhere else it is a lambda.
 
 ## 10. Expressions
 
 ### 10.1 Lambdas
 `args : body`, arrow is `:`:
-```weave
+```weave-part
 Source | lines | bend (line : len line)
 xs | braid (acc x : add acc x) 0
 ```
 
-### 10.1a `_` / `this` — the argument you did not name
-`_` in expression position stands for one argument, so a one-off function needs
-no parameter name. It has a word spelling, `this`, which is the same token —
-`weave fmt` prints the word and `weave fmt -terse` the symbol. **A `_` is
-claimed by the brackets closest to it**, or by the pipeline stage it sits in:
+### 10.1a The hole words — the arguments you did not name
 
-```weave
-xs where (mod _ 2 | eq 0)      is  xs where (x : mod x 2 | eq 0)
-xs | bend (mul _ _)            is  xs | bend (x : mul x x)
-web | get _ "a"                is  get web "a"
-sheet | cell _ k               is  cell sheet k
-```
+A one-off function needs no parameter names. Seven words stand for what the
+enclosing bracket group is handed, and they answer two different questions —
+*which argument*, and *which component of the first one*:
+
+| written | means |
+|---|---|
+| `_`  `this` | the first argument |
+| `that` | the second argument |
+| `former`  `latter` | the two halves of a Twine of **two** |
+| `fore`  `mid`  `aft` | the three parts of a Twine of **three** |
+
+`_` and `this` are one token — the symbol and its word. `weave fmt` prints
+`this` and `weave fmt -terse` prints `_`. The rest have no symbol; `weave fmt`
+cannot shorten them and does not try.
+
+**A component word carries its width as well as its position**, and that is the
+point rather than an accident. `former` and `latter` are what English calls the
+parts of a pair, and the only width it calls them at; `fore`, `mid` and `aft`
+are the parts of a three. So `(former)` on its own says both which component and
+how many there are, and a group holding one can be read where it stands rather
+than after its type is known — which is what makes these work the same in a
+pipeline stage, in brackets, and as a function's argument.
+
+One group may not ask for both widths: `add former aft` says two and three in
+the same breath and is refused. Nothing names a component of a Twine of four; at
+that width a pattern says it more clearly than a word would.
+
+| written with holes | the same thing named |
+|---|---|
+| `xs where (mod _ 2 \| eq 0)` | `xs where (x : mod x 2 \| eq 0)` |
+| `xs \| bend (mul _ _)` | `xs \| bend (x : mul x x)` |
+| `web \| get _ "a"` | `get web "a"` |
+| `xs \| braid (add this that) 0` | `xs \| braid (a b : add a b) 0` |
+| `pairs as add fore aft` | `pairs \| bend ((a, b) : add a b)` |
 
 Two rules and no more:
 
-1. **Brackets bind it.** Every `_` inside one bracket group is the same value,
-   and a group holding one becomes a function of that value. `(add _ _)` is
+1. **Brackets bind them.** Every hole inside one bracket group belongs to that
+   group, and the group becomes a function of what they name. `(add _ _)` is
    `(x : add x x)`, not a function of two.
-2. **A pipeline stage binds it too**, to the value being piped, which is what
+2. **A pipeline stage binds them too**, to the value being piped, which is what
    lets the collection-first verbs (`get`, `cell`, `member`, `insert`) sit in a
    chain. The value is bound, not substituted, so it is evaluated once however
-   many `_` name it.
+   many holes name it.
 
-Because the brackets are what bind it, nesting one call inside another splits
-them up: `(eq 0 (mod _ 3))` claims `_` for the *inner* brackets and is a type
-error, not a different meaning. Pipe instead — `(mod _ 3 | eq 0)` — which is
-also shorter. A `_` with nothing to claim it, or one inside a group that
-already names its parameter, is an error.
+What the claim *binds* is decided by which words appear, and by nothing else:
 
-In a pattern `_` remains the wildcard; the two never meet, since one is an
-expression and the other is a pattern.
+- One argument normally; **two as soon as a `that` appears** anywhere in the
+  group. `that` is what makes a group take a second argument, so
+  `braid (add this that) 0` needs no parameter names.
+- The first argument whole, **or taken apart as soon as a component word
+  appears** — into two for `former`/`latter`, into three for `fore`/`mid`/`aft`.
+  Without one, `this` is the whole value, Twine or not; it is the arrival of a
+  component word that asks for the opening, and which word it is says how wide.
 
-### 10.1b `that` — the second half of a pair
-`that` is the one word with no symbol. Writing it says the value arriving is a
-two-part Twine that the group or stage wants opened, and binds both halves:
-`this` the first, `that` the second, whichever order they are written in.
+All four combine: `(sub that former)` takes a pair and a second argument and
+subtracts one from the other. A pipeline stage hands over one value, so a
+`that` in a bare stage is an error — brackets are what supply a second.
 
-```weave
-pairs | bend (add this that)   is  pairs | bend ((a, b) : add a b)
-pairs where gt this that       is  pairs where ((a, b) : gt a b)
-(7, 8) | sub this that         is  ward (7, 8) { (a, b) : sub a b }
-```
+Because the brackets are what bind them, nesting one call inside another
+splits them up: `(eq 0 (mod _ 3))` claims `_` for the *inner* brackets and is a
+type error, not a different meaning. Pipe instead — `(mod _ 3 | eq 0)` — which
+is also shorter. A hole with nothing to claim it, or one inside a group that
+already names its parameters, is an error.
 
-The same two rules bind it: the closest brackets, or the pipeline stage. What
-changes is only what the claim binds — one value without a `that` anywhere in
-the group, both halves as soon as one appears. So `this` on its own is the
-whole value, pair or not; it is the arrival of `that` that asks for the
-opening. A `that` with nothing to claim it is an error, and no variable can be
-named `that`, since it is a keyword.
+None of the five can be a variable name; all five are keywords. In a pattern
+`_` remains the wildcard, and the two never meet, since one is an expression
+and the other is a pattern.
 
 ### 10.2 `ward` as expression
 Every `ward` yields a value (all arms same type).
 
 ### 10.3 `pick` — the functional ternary
 `pick COND IF_LIGHT IF_SHADOW`, lazy (evaluates only the taken branch):
-```weave
+```weave-part
 pick (gt x 10) "big" "small"
 ```
 
@@ -491,10 +726,29 @@ would mean dictionary passing or specialisation for every constrained call.
 | `Show` | display / output rendering | all built-ins |
 | `Reckon` | `add`, `sub`, `mul`, `div`, `abs`, `neg`, `sum` | Earth, Water |
 | `Bulk` | `len` | Air, Thread, Web, Circle, Taveren, Pattern |
+| `Ply` | `take`, `drop`, `sever`, `rev`, `turn`, `weld`, `repeat` | Air, Thread |
 
 `sort xs`, `eq a b`, and auto-output all dispatch through these; no comparator
 needs to be passed for the common orderings. `Reckon` is what lets one `add`
 serve both Earth and Water without operators or separate names.
+
+`Ply` is the narrower thing `Bulk` is not. `Bulk` says a value has a size; `Ply`
+says its elements lie in a known order, so a run of them can be taken, dropped,
+cut or turned round. A Web has a size and no order, which is why `len` asks for
+`Bulk` and `take` asks for `Ply` — and why `take 5 "hello world"` is a substring
+rather than a round trip through `fires` and back. On Air these count runes, not
+bytes, so `take` agrees with `len` and a character never comes apart in the
+middle.
+
+`weld` and `repeat` fit the Talent for a reason worth naming: neither mentions
+the element type. `weld` is `a -> a -> a` and `repeat` is `Earth -> a -> a`, the
+same shape `rev` has, so both join text and Thread without a word of extra
+machinery. `nth`, `first` and `last` do not fit, and cannot: they answer with an
+*element*, and what an element is depends on what it came out of — a Thread of
+`a` holds an `a`, some text holds a Fire. That is a relation between two types
+rather than a property of one, so it rides as a `Strand` constraint instead,
+settled when the call is typed and defaulting to the Thread reading wherever the
+container is not known.
 
 Container types inherit a Talent from their contents: `Thread a` has `Eq` only
 when `a` does, so `eq [1 2] [1 2]` is fine and `sort [Light Shadow]` is a type
@@ -506,14 +760,17 @@ Constraints show up in inferred types: `double n is add n n` reports
 ## 11.4 Taking a line apart
 
 Most of Advent of Code wants the numbers and not the punctuation, and `earths`
-answers that on its own: `"Game 11: 3 blue, 4 red" | earths` is `[11 3 4]`. When
-the shape of the line *is* the point, `delve` says it:
+answers that on its own: `"Game 11: 3 blue, 4 red" | earths` is `[11 3 4]`.
+`waters` is the same sweep for the other Power, and a run of digits with no
+point still counts, since this reads input rather than source:
+`"x=1.5 y=-2" | waters` is `[1.5 -2.0]`. When the shape of the line *is* the
+point, `delve` says it:
 
 ```weave
 "Game 11: 3 blue, 4 red" | delve "Game {}: {}"
 ```
 ```weave
-Held [11 3 blue, 4 red]
+Held ["11" "3 blue, 4 red"]
 ```
 
 `{}` keeps a run and everything else has to match exactly. A run stops at the
@@ -540,13 +797,34 @@ a literal `{}` in the input, which buys a shape with nothing to escape.
 
 - `Source : Air` — the raw program input. Shape it with `lines`, `fires`,
   `words`, `pattern`, `earth`, `delve`.
-- **Output** is the final top-level expression, rendered via `Show`:
-  Earth/Water/Air print bare; `Thread` prints one element per line; a `Hold`
-  prints as `Held x` or `Stilled`, so an answer that might not be there says so.
-  `say x` forces a `Show` to `Air`.
-  A Thread's elements are separated by newlines and the whole output ends with
-  one. A file may hold several bare expressions; `weave run` prints the last,
-  and `weave trace` reports every one.
+- **Output** is every bare top-level expression, in the order it was written,
+  rendered via `Show`: Earth/Water/Air print bare; `Thread` prints one element
+  per line; a `Hold` prints as `Held x` or `Stilled`, so an answer that might
+  not be there says so. `air x` forces a `Show` to `Air`. A Thread's elements
+  are separated by newlines and the whole output ends with one.
+
+  A chain bound to a name stays quiet; a chain left bare is an answer. So a
+  file for one Advent of Code day is one binding for the input and two bare
+  chains for the two parts, and both get printed:
+
+  ```weave-part
+  digits is [3 1 4 1 5]
+
+  digits through sum
+  digits through prod
+  ```
+  ```
+  14
+  60
+  ```
+
+- **`weave trace`** reports every definition as well, one tab-separated record
+  per line — `LINE`, `NAME`, `VALUE` — which is what an editor shows as ghost
+  text. A chain written one stage to a line reports what it holds at the end of
+  *every* line it spans, so a pipeline reads as a sequence of shapes rather
+  than a single answer. A file that does not compile still reports: the
+  top-level items the mistake reached are left out and the rest is traced, at
+  the lines they are on.
 
 ## 12.1 Primitive specialisation
 
@@ -605,9 +883,9 @@ through every member rather than around one loop.
 
 ## 13. In-place mutation (FBIP) — why updates cost what Go costs
 
-> **Implemented for a `Pattern`, `Web` or `Circle` threaded through a loop**,
-> which is the case that matters. The general form — every container, decided
-> by a reference count maintained everywhere — still needs the counting
+> **Implemented for a `Pattern`, `Web`, `Circle` or `Thread` threaded through a
+> loop**, which is the case that matters. The general form — every container,
+> decided by a reference count maintained everywhere — still needs the counting
 > allocator; the runtime bump-allocates and does not free, so what is not
 > written through is kept.
 
@@ -619,30 +897,107 @@ new grid," but the runtime checks `sheet`'s refcount:
 - **Shared** (something else still reads `sheet`): copy first, then mutate the
   copy. **O(n)**; the old grid stays valid for the other reader.
 
-```weave
-weave g2 is set g  k1 v1     # g unused below -> in-place
-weave g3 is set g2 k2 v2     # g2 dead        -> in-place
-g3                            # a chain of O(1) updates, as Go's g[k]=v is
+```weave-part
+twice g k1 v1 k2 v2 is
+  weave g2 is set g k1 v1    # g unused below -> in-place
+  weave g3 is set g2 k2 v2   # g2 dead        -> in-place
+  g3                         # a chain of O(1) updates, as Go's g[k]=v is
 ```
-Proving it takes two halves, because neither alone is enough. **Statically**,
-that the loop never duplicates the collection: every mention of the parameter
-must be either the update in the tail call or an argument to a verb that reads
-without keeping a reference. Bind it to another name, put it in a Twine,
-capture it in a lambda, or take its `cells` or `keys` — which share the storage
-— and the analysis gives up. **Dynamically**, that it did not arrive already
-shared: the first call usually hands over something the caller still holds, so
-a collection is marked shared when it is built and owned only when it is the
-copy the update itself just made.
+Proving it takes two halves, because neither alone is enough.
 
-A grid needs one ownership bit, because its cells are one block. A `Web` or
-`Circle` is a trie whose nodes are allocated separately and shared between
-versions, so the bit is **per node**: an insert writes through the owned prefix
-of the path and copies from the first shared node downwards, marking the
-children of anything it copies as shared. The first turn of a loop copies, later
-turns mostly do not, and no node is ever copied twice however long the loop
-runs.
+**Dynamically**, that the collection did not arrive already shared. Everything
+is born shared, since the caller usually still holds what it hands over, so the
+first update in a loop copies and marks the copy owned and every later one
+writes through. This half is what makes the static half safe: calling the
+writing form on something shared is never wrong, it simply copies.
 
-`Taveren` and `Thread` buffers are not yet covered.
+**Statically**, that nothing else can reach it. This is the part with rules, and
+they are stated as what is *refused* rather than what is allowed:
+
+- A mention is **read-only** unless the verb can keep the collection. Two things
+  disqualify a verb, and only two. Nine hand back a *window* on the argument's
+  own array — `take`, `drop`, `sever`, `strands`, `takewhile`, `dropwhile`,
+  `chunk`, `windows`, `cells` — and three hand the argument itself straight back
+  when the update had nowhere to go: `mend`, `twist`, `set`. Everything else in
+  the prelude may read it, wherever in the argument list it sits.
+- Beyond that, the **type** decides: the collection's own type constructor must
+  not occur in the call's result type. That is what stops `copies 3 g`,
+  `weld [g] xs` or `put w k g` from quietly keeping it, and it needs no list to
+  maintain — a verb that hands the collection back inside something has that
+  something's type say so. A result the checker cannot resolve to a concrete
+  type counts as mentioning everything.
+- **The program's own functions** are read on the same terms, unless they are
+  `remember`ed: a memo table keeps its arguments for the rest of the program and
+  no type can say that.
+- **A second name is a second owner.** Binding it with `weave`, putting it in a
+  Twine or a Thread, or capturing it in a lambda all give up, because each
+  leaves a reference the analysis cannot follow. A lambda written out *as a
+  direct argument to a verb* is the exception: the verb cannot keep it past the
+  call, so a mention inside is a read like any other.
+- **A chain of updates is one update.** `put (put w a 1) b 2` hands each result
+  straight to the next and nothing else sees the links.
+- **A sibling argument of the updating call may not read it.** The arguments of
+  a tail call are evaluated in order into the loop's slots, so an update at one
+  writes through *before* a later one is evaluated — and a later argument that
+  reads would see a write that, in the language, has not happened. A read
+  anywhere else in the body is fine, because everything else runs first.
+- **Handing it straight back unchanged** into its own slot counts as threading
+  it, not as duplicating it: the next turn holds exactly the reference this one
+  did. That is what a loop with a branch that skips the update looks like, which
+  is most loops.
+- Some clause must **actually update** it. A loop that only reads gains nothing,
+  and is left alone so that nothing is ever disowned that was never owned.
+
+Two shapes carry an update: a **self-tail-recursive parameter**, and a **fold's
+accumulator** — `braid` or `gentle`. `gentle` is `braid` that may stop and
+threads its accumulator identically; its step answers `Woven acc` to carry on,
+which is that fold's tail position, and `Gentled x` to stop, whose `x` is the
+answer leaving the fold rather than the accumulator.
+
+A fold's accumulator may be the collection itself, or a **Twine of state with
+the collection as one half** — `(board, position)` threaded through a walk,
+which is how you carry two things. A Twine the step takes apart on entry and
+rebuilds on exit has exactly one reference to each half, so the half that is a
+collection is as single-threaded as a bare accumulator. The update has to sit in
+that half's slot of the rebuilt Twine, and no other slot may mention it: the
+slots are evaluated in order, so a later one would read a write that has not
+happened.
+
+The step may be **written out or named**. A definition of one clause, whose
+parameters are patterns that cannot fail, which does not call itself and is not
+`remember`ed, *is* a lambda under another name and is read back as one — so
+lifting a step out to a name, which is what you do the moment it grows past a
+line, costs nothing.
+
+**`pick` counts as tail position in both branches here** as it does for tail
+calls (§13.1), so the two spellings of one loop compile to the same program.
+Without that they differed by three orders of magnitude with nothing in the
+source to say which you had written.
+
+**Ownership can cross a call.** A helper that updates a collection and hands it
+back is written twice over: a body that keeps the ownership it was given, and
+the name everyone else calls, which gives it back. A caller that was itself
+holding the collection owned calls the first, so `search (fill board ks) …`
+costs one copy rather than one per turn. The two forms are found by a fixpoint
+over the call graph, started optimistically and cut back wherever a body turns
+out to let its parameter escape.
+
+Three gaps are known and left. A member of a *mutually* tail-recursive group
+cannot consume, because the group compiles to one function over a shared slot
+array. A consumed parameter has to be a plain name in every clause, since
+destructuring one binds a window on its own array. And the fold-over-itself case
+knows `braid` and not `gentle`.
+
+**And what no analysis will ever bless**, so that none of this reads as a
+promise: a *backtracking* search uses the collection it was handed once per
+**option**, not once. The old value has to survive for the next branch, so it is
+genuinely not single-threaded and there is nothing here to find. What helps
+there is not writing through but forgetting — a fused fold turn handing its
+whole storage back at the end of it, which is in §5.1.
+
+`Taveren` is not covered. Its `push` path-copies, but a leftist heap's spine is
+short — 200,000 pushes cost 0.02 s and 36 MB — so it is not the cliff the
+others were.
 
 ## 14. D-particle aliases (optional prose glue)
 
@@ -651,13 +1006,26 @@ no new semantics — so easy code can read like prose.
 
 | Particle | Desugars to | Example |
 |---|---|---|
+| `through f` | `\| f` | `Source through lines` |
 | `where p` | `\| sift p` | `lines Source where has3digits` |
 | `as f` | `\| bend f` | `lines Source as earth` |
-| `through f` | `\| f` | `Source through lines` |
-| `otherwise d` | Option default | (also canonical) |
+| `else d` | `\| otherwise d` | `cell g k else '.'` |
+| `failing d` | `\| snag d` | `harvest earth lines failing 0` |
+
+`through` is the pipe spelled as a word; the other four carry a verb of their
+own. `where` and `as` feed the **function**, so a hole in one makes a lambda —
+`xs as mul _ 2` maps by `(x : mul x 2)`. `else` and `failing` feed a **value**,
+the one to fall back on, so a hole in one has nothing there to claim it.
+
+Which spelling a chain was written with is not a matter of meaning: a particle
+desugars to its verb *by name*, so both forms resolve to the same thing even
+where the name has been shadowed. `weave fmt` therefore chooses — the wordy
+style prints `where p` and `as f`, the terse style `| sift p` and `| bend f`.
 
 Particles sit at exactly the same precedence as `|` and associate left to
-right, so they interleave freely: `xs | bend f where p | len`.
+right, so they interleave freely: `xs | bend f where p | len`. A line opening
+with one continues the line above, which is what lets a long chain be broken
+one stage to a line.
 
 The no-op glue words `of`, `at` and `from` were **cut**: a glue word that can
 shadow a verb would silently rewrite working code, and readability glue is not
@@ -667,10 +1035,12 @@ worth that.
 
 The authoritative catalogue is `internal/prelude/prelude.go`, which the
 compiler parses at start-up — the signatures there *are* these signatures, and
-there are 206 of them. **[docs/verbs.md](docs/verbs.md) lists every one, with
+there are 233 of them. **[docs/verbs.md](docs/verbs.md) lists every one, with
 its type and what it does**, generated from that same table by `make docs`; a
 test fails if it falls out of date, so no verb can exist without appearing
-there. `weave verbs [search]` prints the same reference at the terminal,
+there. `weave docs` serves the same vocabulary as a page with search over every
+name, signature and description at once; `weave verbs [search]` prints it at
+the terminal,
 `weave repl` answers `:type name`, and the language server completes and
 documents the lot.
 
@@ -685,18 +1055,34 @@ sift    : (a -> Spirit) -> Thread a -> Thread a       # filter
 braid   : (b -> a -> b) -> b -> Thread a -> b         # fold
 seek    : (a -> Spirit) -> Thread a -> Hold a
 span    : Earth -> Earth -> Thread Earth              # inclusive range
+under   : Earth -> Thread Earth                       # 0 .. n-1: the places of n things
+copies  : Earth -> a -> Thread a                      # n of the same value
 flow    : (a -> a) -> a -> Thread a                   # endless: seed, f seed, ...
 len     : a -> Earth                                  # any Bulk type
 count   : (a -> Spirit) -> Thread a -> Earth
 sum prod : Thread a -> a                              # needs Reckon a
 sums prods : Thread a -> Thread a                     # the running totals
+scan    : (b -> a -> b) -> b -> Thread a -> Thread b  # braid keeping every one
+priors  : (b -> a -> b) -> b -> Thread a -> Thread b  # scan, keeping the seed too
+settle  : (a -> a) -> a -> a                          # apply until nothing changes
+gentle  : (b -> a -> Weaving b c) -> b -> Thread a -> Weaving b c  # braid that stops
 take drop  : Earth -> Thread a -> Thread a
 takewhile dropwhile : (a -> Spirit) -> Thread a -> Thread a
 zip     : Thread a -> Thread b -> Thread (a, b)
 zipwith : (a -> b -> c) -> Thread a -> Thread b -> Thread c
+couples : Thread a -> Thread (a, a)                   # every two, each once
+index   : Thread a -> Web a Earth                     # where each value sits
+squeeze : Thread Earth -> Thread Earth                # a sparse axis made dense
 sort    : Thread a -> Thread a                        # needs Ord a
 nth     : Earth -> Thread a -> Hold a                 # by position
 has     : a -> Thread a -> Spirit                     # membership; needs Eq a
+high low : Thread a -> Hold a                         # the largest, the smallest
+dupe    : Thread a -> Hold (Earth, Earth, a)          # the first repeat, and where
+
+# Asking where rather than what. Both halves throughout: the first, and all.
+idx  idxs    : a -> Thread a -> ...                   # Hold Earth, Thread Earth
+seekidx siftidx : (a -> Spirit) -> Thread a -> ...    # the same, by test
+highidx lowidx  : Thread a -> Hold Earth              # where high and low found it
 glean   : (a -> Hold b) -> Thread a -> Thread b       # bend, keeping the Held
 harvest : (a -> Hold b) -> Thread a -> Weaving (Thread b) a   # or say which failed
 cycle   : Thread a -> Thread a                        # endless; bound it
@@ -707,6 +1093,7 @@ all any : (a -> Spirit) -> Thread a -> Spirit
 thread  : (a, a) -> Thread a                          # a pair as a Thread
 weld    : Thread a -> Thread a -> Thread a            # weld ys xs: xs then ys
 mend    : Earth -> a -> Thread a -> Thread a          # replace one position
+twist   : Earth -> (a -> a) -> Thread a -> Thread a   # mend, from the old value
 sever   : Earth -> Thread a -> (Thread a, Thread a)   # cut in two
 strands : (a -> b) -> Thread a -> Thread (Thread a)   # runs of adjacent equals
 plait   : Thread a -> Thread a -> Thread a            # zip, flattened
@@ -726,26 +1113,43 @@ words : Air -> Thread Air
 fires : Air -> Thread Fire
 split : Air -> Air -> Thread Air                      # split sep text; "" is per character
 earth : Air -> Hold Earth                             # also water, fire
+base unbase : Earth -> ... -> ...                     # write and read any base 2..36
 air   : a -> Air                                      # render anything, needs Show
 strip : Air -> Air
-earths : Air -> Thread Earth                          # every Earth in some text
+earths waters : Air -> Thread Earth, Thread Water     # every number in some text
+spans : Air -> Thread (Earth, Earth)                  # every `11-22` in some text
+carve : Air -> Air -> Thread Air                      # carve seps text; words, named
 delve : Air -> Air -> Hold (Thread Air)               # delve shape text
 
 # Grid (Pattern a)
 pattern  : Air -> Pattern Fire
 weft     : a -> Thread (Thread a) -> Pattern a        # a Pattern of anything
+warp     : (Knot -> a) -> Earth -> Earth -> Pattern a # a Pattern from its knots
 spin flip : Pattern a -> Pattern a                    # a quarter turn, a mirror
 cell     : Pattern a -> Knot -> Hold a
 set      : Pattern a -> Knot -> a -> Pattern a
 knots    : Pattern a -> Thread Knot
 cells    : Pattern a -> Thread a
+sited sites : Pattern a -> a -> ...                   # where a value is: the first, and all
 cellwise : (a -> b) -> Pattern a -> Pattern b         # map, keeping the shape
 nb4 nb8  : Pattern a -> Knot -> Thread a              # neighbouring cells
 around4 around8 : Pattern a -> Knot -> Thread Knot    # neighbouring knots
+tallies  : Pattern a -> Pattern a                     # the box above and left of each cell
+tallied  : Pattern a -> Knot -> Knot -> a             # a box out of one, in one subtraction
+
+# Ranges. A Twine, inclusive at both ends, which is how every input writes one.
+overlaps    : (a, a) -> (a, a) -> Spirit              # needs Ord a
+overlapping : (a, a) -> (a, a) -> Hold (a, a)         # the part they share
+within      : (a, a) -> (a, a) -> Spirit              # does the first hold the second
+spanning    : (a, a) -> (a, a) -> (a, a)              # the smallest round both
+holding     : (a, a) -> a -> Spirit
+width       : (Earth, Earth) -> Earth
+mesh        : Thread (Earth, Earth) -> Thread (Earth, Earth)  # merged, in order
 
 # Web / Circle / Taveren / graphs
 get   : Web k v -> k -> Hold v
 put   : Web k v -> k -> v -> Web k v
+forget : Web k v -> k -> Web k v                      # and remove, for a Circle
 freq  : Thread a -> Web a Earth                       # frequency count
 push  : Taveren a -> a -> Taveren a
 pop   : Taveren a -> Hold (a, Taveren a)
@@ -756,11 +1160,20 @@ dijkstra : (a -> Thread (Earth, a)) -> a -> Web a Earth      where Ord a
 reach    : (a -> Thread a) -> a -> Circle a                  where Eq a
 route    : (a -> Thread (Earth, a)) -> a -> a -> Hold (Thread a)
 toposort : (a -> Thread a) -> Thread a -> Hold (Thread a)     where Eq a
+clumps   : (a -> Thread a) -> Thread a -> Thread (Thread a)   where Eq a
+
+# A Link answers the same question while the joining is still going on.
+link    : Thread a -> Link a                                  where Eq a
+bind    : Link a -> a -> a -> Link a                          where Eq a
+bound   : Link a -> a -> a -> Spirit                          where Eq a
+clumped : Link a -> Thread (Thread a)
 
 # Hold / Weaving
-otherwise : a -> Hold a -> a
+otherwise : a -> Hold a -> a                           # `else d` as a particle
 holds     : Hold a -> Spirit
+woven     : Weaving a e -> Spirit                      # `holds`, for the other pair
 rescue    : a -> Weaving a e -> a
+snag      : e -> Weaving a e -> e                      # `failing d` as a particle
 
 # Numbers / logic (no operators — these are the verbs)
 add sub mul div mod  : a -> a -> a                     # needs Reckon

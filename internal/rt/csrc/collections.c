@@ -77,7 +77,7 @@ static void hash_value(uint64_t *h, Value v) {
   case W_THREAD: {
     WThread *t = (WThread *)v.obj;
     for (size_t i = 0; i < t->len; i++)
-      hash_value(h, t->items[i]);
+      hash_value(h, thr_at(t, i));
     break;
   }
   default:
@@ -554,12 +554,40 @@ typedef struct {
   Value key, val;
 } Cell;
 
+// A packed cell: the two payloads and nothing else. A Value is sixteen bytes
+// because it carries a tag, and in a table the tag is the same in every cell —
+// a `Web Earth Earth` holds Earths all the way down, and the type said so
+// before the program ran. Holding the two tags once on the table instead of
+// once per cell halves it.
+//
+// Halving the table is most of what this is for. On AoC 2024 day 22, two
+// thirds of peak memory was flat cells and the boxed layout was 262 MB of it;
+// the same run packed is 131 MB. The rest is that a probe compares one int64
+// rather than a tag and a payload, and that twice as many cells fit in a cache
+// line — and `flat_put` and `flat_lookup` together are near thirty per cent of
+// that program.
+typedef struct {
+  int64_t key, val;
+} Pair;
+
 typedef struct {
   size_t count; // live entries
   size_t cap;   // slots, always a power of two
   size_t limit; // count at which the table grows
+  // Exactly one of these is set. The packed one is the usual case; the boxed
+  // one is what a table falls back to when its values are not immediates, or
+  // when a later entry does not agree with the first about its type.
   Cell *cells;
+  Pair *pairs;
+  // The tags the packed layout left out, FLAT_FREE until the first entry says
+  // what they are.
+  uint32_t keyTag, valTag;
 } Flat;
+
+// PACK_FREE marks an empty slot in the packed layout, where there is no tag to
+// carry the marker. A real key can pack to it — `knot(INT32_MIN, 0)` does —
+// and such a table falls back to the boxed layout rather than lose the entry.
+#define PACK_FREE INT64_MIN
 
 // The smallest table worth allocating. A map built in a loop reaches this in
 // eight inserts, and a map that never grows past it costs 512 bytes.
@@ -626,15 +654,81 @@ static uint64_t imm_hash(Value v) {
 // would sit there while the next request asked for twice as much. malloc is
 // built for exactly this shape and reuses it; measured, going through the arena
 // instead cost `mapbuild` a third of its memory for nothing.
+// pack and unpack move an immediate between a Value and the eight bytes the
+// packed layout keeps. They are exact inverses given the tag, which is why the
+// tag is kept on the table.
+static int64_t pack(Value v) {
+  switch (v.tag) {
+  case W_EARTH:
+    return v.earth;
+  case W_KNOT:
+    return (int64_t)(((uint64_t)(uint32_t)v.knot.row << 32) | (uint32_t)v.knot.col);
+  case W_FIRE:
+    return (int64_t)v.fire;
+  default:
+    return v.spirit ? 1 : 0;
+  }
+}
+
+static Value unpack(uint32_t tag, int64_t x) {
+  switch (tag) {
+  case W_EARTH:
+    return w_earth(x);
+  case W_KNOT:
+    return w_knot_make((int32_t)((uint64_t)x >> 32), (int32_t)(uint32_t)x);
+  case W_FIRE:
+    return w_fire((uint32_t)x);
+  default:
+    return w_spirit(x != 0);
+  }
+}
+
 static Flat *flat_new(size_t cap) {
   Flat *f = (Flat *)w_alloc(sizeof(Flat));
   f->count = 0;
   f->cap = cap;
   f->limit = cap - cap / 4; // grow at three quarters full
-  f->cells = (Cell *)malloc(sizeof(Cell) * cap);
+  f->cells = NULL;
+  f->keyTag = FLAT_FREE; // nothing has said what this table holds yet
+  f->valTag = FLAT_FREE;
+  f->pairs = (Pair *)w_raw_alloc(sizeof(Pair) * cap);
   for (size_t i = 0; i < cap; i++)
-    f->cells[i].key.tag = FLAT_FREE;
+    f->pairs[i].key = PACK_FREE;
   return f;
+}
+
+// A slot is read through these, so that the two layouts differ in one place
+// rather than in ten. The hot paths below still take the packed case on its
+// own, because a probe that compares one int64 is the point.
+static inline bool flat_vacant(const Flat *f, size_t i) {
+  return f->pairs ? f->pairs[i].key == PACK_FREE : f->cells[i].key.tag == FLAT_FREE;
+}
+
+static inline Value flat_key(const Flat *f, size_t i) {
+  return f->pairs ? unpack(f->keyTag, f->pairs[i].key) : f->cells[i].key;
+}
+
+static inline Value flat_val(const Flat *f, size_t i) {
+  return f->pairs ? unpack(f->valTag, f->pairs[i].val) : f->cells[i].val;
+}
+
+// to_boxed gives up the packed layout, keeping whatever is already in the
+// table. It is what happens when a value is not an immediate, when an entry
+// disagrees with the first about its type, or when a key packs to the marker
+// an empty slot uses.
+static void to_boxed(Flat *f) {
+  Cell *cells = (Cell *)w_raw_alloc(sizeof(Cell) * f->cap);
+  for (size_t i = 0; i < f->cap; i++)
+    cells[i].key.tag = FLAT_FREE;
+  for (size_t i = 0; i < f->cap; i++) {
+    if (f->pairs[i].key == PACK_FREE)
+      continue;
+    cells[i].key = unpack(f->keyTag, f->pairs[i].key);
+    cells[i].val = unpack(f->valTag, f->pairs[i].val);
+  }
+  w_raw_free(f->pairs, sizeof(Pair) * f->cap);
+  f->pairs = NULL;
+  f->cells = cells;
 }
 
 // flat_slot returns where a key lives, or where it would go. Linear probing:
@@ -643,6 +737,15 @@ static Flat *flat_new(size_t cap) {
 static size_t flat_slot(const Flat *f, Value key, uint64_t hash) {
   size_t mask = f->cap - 1;
   size_t i = (size_t)hash & mask;
+  if (f->pairs) {
+    int64_t want = pack(key);
+    for (;;) {
+      int64_t k = f->pairs[i].key;
+      if (k == PACK_FREE || k == want)
+        return i;
+      i = (i + 1) & mask;
+    }
+  }
   for (;;) {
     Value k = f->cells[i].key;
     if (k.tag == FLAT_FREE || imm_equal(k, key))
@@ -652,37 +755,80 @@ static size_t flat_slot(const Flat *f, Value key, uint64_t hash) {
 }
 
 static bool flat_lookup(const Flat *f, Value key, Value *out) {
-  size_t i = flat_slot(f, key, imm_hash(key));
-  if (f->cells[i].key.tag == FLAT_FREE)
+  // A packed table can only hold what its first entry did, so a key of another
+  // type is absent whatever the probe would say.
+  if (f->pairs && f->keyTag != key.tag)
     return false;
-  *out = f->cells[i].val;
+  size_t i = flat_slot(f, key, imm_hash(key));
+  if (flat_vacant(f, i))
+    return false;
+  *out = flat_val(f, i);
   return true;
 }
 
 static void flat_grow(Flat *f) {
   size_t cap = f->cap * 2, mask = cap - 1;
-  Cell *cells = (Cell *)malloc(sizeof(Cell) * cap);
-  for (size_t i = 0; i < cap; i++)
-    cells[i].key.tag = FLAT_FREE;
-  for (size_t i = 0; i < f->cap; i++) {
-    Value k = f->cells[i].key;
-    if (k.tag == FLAT_FREE)
-      continue;
-    size_t j = (size_t)imm_hash(k) & mask;
-    while (cells[j].key.tag != FLAT_FREE)
-      j = (j + 1) & mask;
-    cells[j] = f->cells[i];
+  if (f->pairs) {
+    Pair *pairs = (Pair *)w_raw_alloc(sizeof(Pair) * cap);
+    for (size_t i = 0; i < cap; i++)
+      pairs[i].key = PACK_FREE;
+    for (size_t i = 0; i < f->cap; i++) {
+      if (f->pairs[i].key == PACK_FREE)
+        continue;
+      size_t j = (size_t)imm_hash(unpack(f->keyTag, f->pairs[i].key)) & mask;
+      while (pairs[j].key != PACK_FREE)
+        j = (j + 1) & mask;
+      pairs[j] = f->pairs[i];
+    }
+    w_raw_free(f->pairs, sizeof(Pair) * f->cap);
+    f->pairs = pairs;
+  } else {
+    Cell *cells = (Cell *)w_raw_alloc(sizeof(Cell) * cap);
+    for (size_t i = 0; i < cap; i++)
+      cells[i].key.tag = FLAT_FREE;
+    for (size_t i = 0; i < f->cap; i++) {
+      Value k = f->cells[i].key;
+      if (k.tag == FLAT_FREE)
+        continue;
+      size_t j = (size_t)imm_hash(k) & mask;
+      while (cells[j].key.tag != FLAT_FREE)
+        j = (j + 1) & mask;
+      cells[j] = f->cells[i];
+    }
+    w_raw_free(f->cells, sizeof(Cell) * f->cap);
+    f->cells = cells;
   }
-  free(f->cells);
-  f->cells = cells;
   f->cap = cap;
   f->limit = cap - cap / 4;
+}
+
+// packable reports whether an entry can go in the packed layout as it stands,
+// and settles what the table holds when it is the first one in.
+static bool packable(Flat *f, Value key, Value val) {
+  if (f->keyTag == FLAT_FREE) {
+    if (!immediate(key) || !immediate(val))
+      return false;
+    f->keyTag = key.tag;
+    f->valTag = val.tag;
+  }
+  return key.tag == f->keyTag && val.tag == f->valTag && pack(key) != PACK_FREE;
 }
 
 // flat_put writes through the table, which is only ever done to one the
 // compiler has proved unshared.
 static void flat_put(Flat *f, Value key, Value val) {
+  if (f->pairs && !packable(f, key, val))
+    to_boxed(f);
+
   size_t i = flat_slot(f, key, imm_hash(key));
+  if (f->pairs) {
+    bool fresh = f->pairs[i].key == PACK_FREE;
+    f->pairs[i].key = pack(key);
+    f->pairs[i].val = pack(val);
+    if (fresh && ++f->count >= f->limit)
+      flat_grow(f);
+    return;
+  }
   if (f->cells[i].key.tag != FLAT_FREE) {
     f->cells[i].val = val;
     return;
@@ -705,23 +851,30 @@ static void flat_put(Flat *f, Value key, Value val) {
 // rather than by a case.
 static bool flat_remove(Flat *f, Value key) {
   size_t mask = f->cap - 1;
+  if (f->pairs && f->keyTag != key.tag)
+    return false;
   size_t hole = flat_slot(f, key, imm_hash(key));
-  if (f->cells[hole].key.tag == FLAT_FREE)
+  if (flat_vacant(f, hole))
     return false;
 
   size_t i = hole;
   for (;;) {
     i = (i + 1) & mask;
-    Value k = f->cells[i].key;
-    if (k.tag == FLAT_FREE)
+    if (flat_vacant(f, i))
       break;
-    size_t home = (size_t)imm_hash(k) & mask;
+    size_t home = (size_t)imm_hash(flat_key(f, i)) & mask;
     if (((i - home) & mask) >= ((i - hole) & mask)) {
-      f->cells[hole] = f->cells[i];
+      if (f->pairs)
+        f->pairs[hole] = f->pairs[i];
+      else
+        f->cells[hole] = f->cells[i];
       hole = i;
     }
   }
-  f->cells[hole].key.tag = FLAT_FREE;
+  if (f->pairs)
+    f->pairs[hole].key = PACK_FREE;
+  else
+    f->cells[hole].key.tag = FLAT_FREE;
   f->count--;
   return true;
 }
@@ -729,8 +882,13 @@ static bool flat_remove(Flat *f, Value key) {
 static Flat *flat_copy(const Flat *src) {
   Flat *f = (Flat *)w_alloc(sizeof(Flat));
   *f = *src;
-  f->cells = (Cell *)malloc(sizeof(Cell) * src->cap);
-  memcpy(f->cells, src->cells, sizeof(Cell) * src->cap);
+  if (src->pairs) {
+    f->pairs = (Pair *)w_raw_alloc(sizeof(Pair) * src->cap);
+    memcpy(f->pairs, src->pairs, sizeof(Pair) * src->cap);
+  } else {
+    f->cells = (Cell *)w_raw_alloc(sizeof(Cell) * src->cap);
+    memcpy(f->cells, src->cells, sizeof(Cell) * src->cap);
+  }
   return f;
 }
 
@@ -775,7 +933,7 @@ static uint64_t args_hash(const Value *args, int n) {
 static void memo_alloc(WMemo *m, size_t cap) {
   m->cap = cap;
   m->limit = cap - cap / 4;
-  m->slots = (Value *)malloc(sizeof(Value) * cap * (size_t)m->width);
+  m->slots = (Value *)w_raw_alloc(sizeof(Value) * cap * (size_t)m->width);
   for (size_t i = 0; i < cap; i++)
     m->slots[i * (size_t)m->width].tag = FLAT_FREE;
 }
@@ -828,7 +986,7 @@ static void memo_grow(WMemo *m) {
       j = (j + 1) & mask;
     memcpy(m->slots + j * (size_t)m->width, row, sizeof(Value) * (size_t)m->width);
   }
-  free(old);
+  w_raw_free(old, sizeof(Value) * oldcap * (size_t)m->width);
 }
 
 void w_memo_put(WMemo *m, const Value *args, Value result) {
@@ -876,13 +1034,15 @@ static Hamt *to_trie(WMap *m) {
   Hamt *root = hamt_new_cap(0, HAMT_WIDTH);
   bool replaced = false;
   for (size_t i = 0; i < f->cap; i++) {
-    if (f->cells[i].key.tag == FLAT_FREE)
+    if (flat_vacant(f, i))
       continue;
     replaced = false;
-    root = hamt_insert_owned(root, f->cells[i].key, f->cells[i].val,
-                             w_hash(f->cells[i].key), 0, &replaced);
+    Value k = flat_key(f, i), v = flat_val(f, i);
+    root = hamt_insert_owned(root, k, v, w_hash(k), 0, &replaced);
   }
-  free(f->cells);
+  w_raw_free(f->pairs, sizeof(Pair) * f->cap);
+  w_raw_free(f->cells, sizeof(Cell) * f->cap);
+  f->pairs = NULL;
   f->cells = NULL;
   m->flat = NULL;
   m->root = root;
@@ -1029,6 +1189,10 @@ bool w_web_has(Value web, Value key) {
   return map_lookup(web, key, &out);
 }
 
+bool w_web_find(Value web, Value key, Value *out) {
+  return map_lookup(web, key, out);
+}
+
 size_t w_web_size(Value web) {
   WMap *m = map_of(web);
   return m->flat ? m->flat->count : m->root->count;
@@ -1150,16 +1314,25 @@ static Rank *ranks_sort(Rank *a, size_t n, Rank **scratch) {
 // first, since walking one is a callback. Either way the entries stay put and
 // only the order is sorted.
 typedef struct {
-  const Cell *cells;
-  const Rank *order; // NULL when the cells are already in the order wanted
+  const Flat *flat;  // a flat map, read where it lies
+  const Cell *cells; // a trie's entries, gathered; NULL when flat is set
+  const Rank *order; // NULL when the entries are already in the order wanted
   size_t len;
   Cell *cells_owned; // gathered entries, when they had to be gathered
   Rank *ranks;       // the two rank arrays the sort ping-ponged between
   Rank *ranks_spare;
 } Entries;
 
-static inline const Cell *entry_at(const Entries *e, size_t i) {
-  return &e->cells[e->order ? e->order[i].at : i];
+// An entry comes back by value rather than by pointer, because a packed table
+// has no Cell to point at — it has the two payloads and the tags to read them
+// with, which is the whole saving.
+static inline Cell entry_at(const Entries *e, size_t i) {
+  size_t at = e->order ? e->order[i].at : i;
+  if (e->flat) {
+    Cell c = {flat_key(e->flat, at), flat_val(e->flat, at)};
+    return c;
+  }
+  return e->cells[at];
 }
 
 static void entries_release(Entries *e) {
@@ -1177,6 +1350,7 @@ static Entries web_entries_of(Value web) {
   WMap *m = map_of(web);
   size_t n = w_web_size(web);
   Entries e;
+  e.flat = NULL;
   e.cells = NULL;
   e.order = NULL;
   e.len = n;
@@ -1193,14 +1367,14 @@ static Entries web_entries_of(Value web) {
     e.ranks = (Rank *)w_alloc(sizeof(Rank) * n);
     size_t j = 0;
     for (size_t i = 0; i < m->flat->cap; i++) {
-      if (m->flat->cells[i].key.tag == FLAT_FREE)
+      if (flat_vacant(m->flat, i))
         continue;
-      e.ranks[j].key = sort_key(m->flat->cells[i].key);
+      e.ranks[j].key = sort_key(flat_key(m->flat, i));
       e.ranks[j].at = (uint32_t)i;
       j++;
     }
     e.order = ranks_sort(e.ranks, n, &e.ranks_spare);
-    e.cells = m->flat->cells;
+    e.flat = m->flat;
     return e;
   }
 
@@ -1238,9 +1412,9 @@ size_t w_web_entries(Value web, Value **keys, Value **vals) {
   Value *ks = (Value *)w_alloc(sizeof(Value) * n);
   Value *vs = (Value *)w_alloc(sizeof(Value) * n);
   for (size_t i = 0; i < e.len; i++) {
-    const Cell *c = entry_at(&e, i);
-    ks[i] = c->key;
-    vs[i] = c->val;
+    Cell c = entry_at(&e, i);
+    ks[i] = c.key;
+    vs[i] = c.val;
   }
   entries_release(&e);
   *keys = ks;
@@ -1253,18 +1427,18 @@ static Value web_collect(Value web, int which) {
   size_t n = e.len ? e.len : 1;
   Value *items = (Value *)w_alloc(sizeof(Value) * n);
   for (size_t i = 0; i < e.len; i++) {
-    const Cell *c = entry_at(&e, i);
+    Cell c = entry_at(&e, i);
     switch (which) {
     case 0:
-      items[i] = c->key;
+      items[i] = c.key;
       break;
     case 1:
-      items[i] = c->val;
+      items[i] = c.val;
       break;
     default: {
       Value *pair = (Value *)w_alloc(sizeof(Value) * 2);
-      pair[0] = c->key;
-      pair[1] = c->val;
+      pair[0] = c.key;
+      pair[1] = c.val;
       items[i] = w_twine(pair, 2);
       break;
     }
@@ -1301,10 +1475,10 @@ bool w_web_equal(Value a, Value b) {
   if (m->flat) {
     for (size_t i = 0; i < m->flat->cap; i++) {
       Value found;
-      if (m->flat->cells[i].key.tag == FLAT_FREE)
+      if (flat_vacant(m->flat, i))
         continue;
-      if (!map_lookup(b, m->flat->cells[i].key, &found) ||
-          !w_equal(m->flat->cells[i].val, found))
+      if (!map_lookup(b, flat_key(m->flat, i), &found) ||
+          !w_equal(flat_val(m->flat, i), found))
         return false;
     }
     return true;

@@ -85,6 +85,31 @@ func (g *gen) primitiveType(e ast.Expr) string {
 	return ""
 }
 
+// packedElem names the C tag every element of e will carry, when e is a Thread
+// whose elements are all one Power that lives in the Value itself. A loop
+// building such a Thread can write payloads alone and put the tag in the
+// header — eight bytes to the element rather than sixteen. See the layout note
+// in weave.h.
+//
+// Earth alone for now, which is what a parsed input and everything counted out
+// of one is made of. Water and Fire would work the same way and are waiting on
+// a benchmark that wants them.
+func (g *gen) packedElem(e ast.Expr) string {
+	t, ok := g.info.Types[e]
+	if !ok {
+		return ""
+	}
+	con, ok := types.Resolve(t).(*types.Con)
+	if !ok || con.Name != types.ThreadCon || len(con.Args) != 1 {
+		return ""
+	}
+	inner, ok := types.Resolve(con.Args[0]).(*types.Con)
+	if !ok || len(inner.Args) != 0 || inner.Name != types.Earth {
+		return ""
+	}
+	return "W_EARTH"
+}
+
 // operandType finds the type shared by a call's operands, taking the first one
 // that is known. A partially applied verb still identifies its type this way:
 // in `gt 4` the supplied bound is an Earth, so the comparison is at Earth.

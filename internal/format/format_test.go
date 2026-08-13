@@ -38,10 +38,10 @@ func TestCanonicalises(t *testing.T) {
 		{"a bend becomes as", "a is [1 2] through bend inc\na\n",
 			"a is [1 2] as inc\n\na\n"},
 		{"a bracketed ward stays on its line", "a is ward Light (Light : 1) (_ : 0)\na\n",
-			"a is ward Light (Light : 1) (_ : 0)\n\na\n"},
+			"a is ward Light (Light gives 1) (_ gives 0)\n\na\n"},
 		{"a block ward stays a block",
 			"a is\n  ward Light\n    Light : 1\n    _ : 0\na\n",
-			"a is\n  ward Light\n    Light : 1\n    _ : 0\n\na\n"},
+			"a is\n  ward Light\n    Light gives 1\n    _ gives 0\n\na\n"},
 		{"an otherwise becomes else", "a is first [1 2] | otherwise 0\na\n",
 			"a is first [1 2] else 0\n\na\n"},
 		{"through stays through", "a is [1 2] through take 1\na\n",
@@ -65,7 +65,7 @@ func TestCanonicalises(t *testing.T) {
 			"a is 1\n\nb is 2\n\na\n"},
 		{"indentation is normalised",
 			"f x is\n      ward x\n            0 : 1\n            _ : 2\nf 0\n",
-			"f x is\n  ward x\n    0 : 1\n    _ : 2\n\nf 0\n"},
+			"f x is\n  ward x\n    0 gives 1\n    _ gives 2\n\nf 0\n"},
 		{"comments are kept",
 			"# leading\na is 1  # trailing\na\n",
 			"# leading\na is 1  # trailing\n\na\n"},
@@ -205,8 +205,48 @@ func formatCorpus(t *testing.T) []string {
 		"a is ward Light (Light : \"a very long answer indeed for this one case here\") (_ : \"and another long one\")\na\n",
 		"a is [1 2] | cycle | scan add 0 | gentle (s n : pick (member s n) (Gentled n) (Woven (insert s n))) (circle [0]) | snag 0\na\n",
 		"a is [1 2] | sift (n : gt 100000000 (mul n (mul n (mul n (mul n n)))))\na\n",
+		"f p is\n  weave (a, b) is p\n  weave (m, _) is (b, a)\n  add m a\nf (1, 2)\n",
+		"g p is weave (a, b) is p into add a b\ng (1, 2)\n",
+		// A Thread of one holding something that is not an atom. The comma
+		// that separates elements is never written for a single one, so the
+		// brackets round it are the only thing keeping it one element.
+		"f x is [(inc x)]\nf 1\n",
+		"a is [(1, 2)]\na\n",
+		"a is [[1 2]]\na\n",
 	)
 	return out
+}
+
+// A piped hole word is a Ward or a Let by the time the formatter sees it — the
+// parser desugars `xs | latter` to a match on the pair it opens — so a chain
+// ending in one used to stop being a chain, and ran off the edge however long
+// it got.
+func TestAChainEndingInAHoleWordStillBreaks(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{
+			"latter",
+			"after p l is add p l\n\na is\n  [1, 2] through braid ((p, n) l gives " +
+				"(after p l, add n (pick (eq 0 (after p l)) 1 0))) (50, 0) through latter\n\na\n",
+		},
+		{
+			"the whole value",
+			"a is\n  [1, 2] through braid (n l gives add n (mul l (add l (mul l " +
+				"(add l 12345)))))  0 through _\n\na\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := fmtOK(t, tc.src)
+			for _, line := range strings.Split(out, "\n") {
+				if len(line) > Width {
+					t.Errorf("line runs past the margin:\n%s", out)
+				}
+			}
+			if again := fmtOK(t, out); again != out {
+				t.Errorf("not idempotent:\n%s\n%s", out, again)
+			}
+		})
+	}
 }
 
 // TestLongPipelineWraps checks that a chain past the margin is broken one
@@ -279,5 +319,131 @@ func TestTerseIsTheOtherSpelling(t *testing.T) {
 	}
 	if wordy != src {
 		t.Errorf("round trip:\ngot:  %q\nwant: %q", wordy, src)
+	}
+}
+
+// A call that will not fit breaks at its arguments, the same seam a pipeline
+// stage breaks at. Without this a nested `pick` — which is how a Weave program
+// says "otherwise" — ran to whatever length it liked: 270 characters in the
+// worst of the Advent of Code 2025 solutions, which is not a form anybody would
+// choose, and so not one anybody would run the formatter to get.
+func TestALongCallBreaksAtItsArguments(t *testing.T) {
+	src := "f a b c d is\n" +
+		"  pick (eq 0 a) Light (pick (lt 0 b) Shadow (pick (gte 10 c) Shadow " +
+		"(pick (eq d a) (f a b c (add d 1)) (f a (sub b 1) c d))))\n\nf 1 2 3 4\n"
+	out := fmtOK(t, src)
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) > Width {
+			t.Errorf("line runs past the margin:\n%s", out)
+		}
+	}
+	// The condition and the first branch stay beside the verb; what did not fit
+	// goes below, one argument to a line.
+	if !strings.Contains(out, "pick (eq 0 a) Light\n") {
+		t.Errorf("expected the call broken after what fits:\n%s", out)
+	}
+	if again := fmtOK(t, out); again != out {
+		t.Errorf("breaking a call is not idempotent:\n%s\n%s", out, again)
+	}
+}
+
+// The three things a too-long argument can be broken into, each inside the
+// brackets it already sat in. The closing bracket has to land on the last line
+// written, however deep the breaking went, or what comes back does not parse.
+func TestALongArgumentBreaksInsideItsBrackets(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{
+			"a call",
+			"f a b is\n  g (h a b (h b a (h a a (h b b (h a b (h b a (h a a 1)))))))\n\nf 1 2\n",
+		},
+		{
+			"a pipeline",
+			"f a is\n  add 1 (span 1 a through bend (n gives mul n n) through sift " +
+				"(n gives gt 100 n) through sum)\n\nf 30\n",
+		},
+		{
+			"a lambda",
+			"f xs is\n  xs through bend (n gives add (mul n 1000) (add (mul n 100) " +
+				"(add (mul n 10) (add n 12345678))))\n\nf [1, 2]\n",
+		},
+		{
+			// A Twine literal has a comma to lead with, so it breaks one
+			// element to a line the way a Thread literal already did.
+			"a Twine literal",
+			"f xs is\n  xs through bend (l gives (split \":\" l through first else \"\" " +
+				"through strip, split \":\" l through second else \"\" through words))\n\nf [\"a: b\"]\n",
+		},
+		{
+			// The same, written with the hole words: the lambda prints as its
+			// body, so the seam is the body's.
+			"a Twine literal under a hole word",
+			"f xs is\n  xs as (split \":\" this through first else \"\" through strip, " +
+				"split \":\" this through second else \"\" through words)\n\nf [\"a: b\"]\n",
+		},
+		{
+			"a Thread literal",
+			"f a is\n  weld [add a 100000, mul a 200000, sub a 300000, div a 400000, " +
+				"mod a 500000] [1]\n\nf 7\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := fmtOK(t, tc.src)
+			for _, line := range strings.Split(out, "\n") {
+				if len(line) > Width {
+					t.Errorf("line runs past the margin:\n%s", out)
+				}
+			}
+			if again := fmtOK(t, out); again != out {
+				t.Errorf("not idempotent:\n%s\n%s", out, again)
+			}
+		})
+	}
+}
+
+// A binding that takes its value apart prints its pattern where a name would
+// go, in both spellings, and reads back as itself.
+func TestADestructuringBindingRoundTrips(t *testing.T) {
+	src := "f p is\n" +
+		"  weave (a, b) is p\n" +
+		"  weave [x, y] is [a, b]\n" +
+		"  weave (m, _) is (x, y)\n" +
+		"  add m y\n" +
+		"\n" +
+		"g p is weave (a, b) is p into add a b\n" +
+		"\n" +
+		"join \" \" [f (1, 2) | air, g (3, 4) | air]\n"
+	out := fmtOK(t, src)
+	for _, want := range []string{"weave (a, b) is p", "weave [x y] is [a b]", "weave (m, _) is (x, y)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in:\n%s", want, out)
+		}
+	}
+	if again := fmtOK(t, out); again != out {
+		t.Errorf("not idempotent:\n%s\n%s", out, again)
+	}
+	terse, err := SourceStyle(src, "test.weave", Terse)
+	if err != nil {
+		t.Fatalf("terse: %v", err)
+	}
+	if !strings.Contains(terse, "weave (a, b) = p") {
+		t.Errorf("expected the terse binder:\n%s", terse)
+	}
+}
+
+// A top-level definition that takes its value apart prints its pattern where a
+// name would go. The formatter reads the parse tree, so it sees what was
+// written rather than the projections the checker expands it into.
+func TestATopLevelDestructuringPrintsAsWritten(t *testing.T) {
+	src := "dims is (12, 5)\n\n(width, height) is dims\n\narea is mul width height\n\narea\n"
+	out := fmtOK(t, src)
+	if !strings.Contains(out, "(width, height) is dims") {
+		t.Errorf("expected the pattern to print:\n%s", out)
+	}
+	if strings.Contains(out, "whole") {
+		t.Errorf("the hidden name leaked into the output:\n%s", out)
+	}
+	if again := fmtOK(t, out); again != out {
+		t.Errorf("not idempotent:\n%s\n%s", out, again)
 	}
 }

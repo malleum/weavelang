@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-// TestAocSpec runs the plugin's own Lua checks, which cover the parts of
-// lua/weave/aoc.lua that are logic rather than editor: reading a year and a
-// day out of a path, deciding which part the cursor is in, reading what the
-// site said, and turning the page into Markdown.
+// TestAocSpec runs the plugin's own Lua checks, which cover the parts of it
+// that are logic rather than editor: reading a year and a day out of a path,
+// deciding which part the cursor is in, reading what the site said, turning the
+// page into Markdown, and — in calls_spec — finding the definition the cursor
+// is in and laying a watched function's calls out as a table.
 //
 // It is skipped where no Lua is installed. The alternative — leaving the
 // awkward parts of a plugin unchecked because the language they are written in
@@ -27,12 +28,14 @@ func TestAocSpec(t *testing.T) {
 		t.Skip("no Lua on PATH")
 	}
 
-	args := []string{"test/aoc_spec.lua"}
-	if strings.HasSuffix(lua, "nvim") {
-		args = []string{"-l", "test/aoc_spec.lua"}
-	}
-	out, err := exec.Command(lua, args...).CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "all ok") {
-		t.Errorf("the plugin's Lua checks failed: %v\n%s", err, out)
+	for _, spec := range []string{"test/aoc_spec.lua", "test/calls_spec.lua"} {
+		args := []string{spec}
+		if strings.HasSuffix(lua, "nvim") {
+			args = []string{"-l", spec}
+		}
+		out, err := exec.Command(lua, args...).CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "all ok") {
+			t.Errorf("%s failed: %v\n%s", spec, err, out)
+		}
 	}
 }

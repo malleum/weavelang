@@ -68,6 +68,10 @@
             "named": true
           },
           {
+            "type": "ward",
+            "named": true
+          },
+          {
             "type": "web",
             "named": true
           }
@@ -135,6 +139,10 @@
           },
           {
             "type": "twine",
+            "named": true
+          },
+          {
+            "type": "ward",
             "named": true
           },
           {
@@ -358,7 +366,7 @@
       },
       "name": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -419,6 +427,24 @@
             "named": true
           }
         ]
+      },
+      "pattern": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "thread_pattern",
+            "named": true
+          },
+          {
+            "type": "twine_pattern",
+            "named": true
+          },
+          {
+            "type": "wildcard",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -464,7 +490,7 @@
     "fields": {
       "name": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -512,6 +538,24 @@
             "type": "text",
             "named": true
           },
+          {
+            "type": "thread_pattern",
+            "named": true
+          },
+          {
+            "type": "twine_pattern",
+            "named": true
+          },
+          {
+            "type": "wildcard",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": false,
+        "required": false,
+        "types": [
           {
             "type": "thread_pattern",
             "named": true
@@ -591,6 +635,10 @@
             "named": true
           },
           {
+            "type": "ward",
+            "named": true
+          },
+          {
             "type": "web",
             "named": true
           }
@@ -660,6 +708,10 @@
         },
         {
           "type": "twine",
+          "named": true
+        },
+        {
+          "type": "ward",
           "named": true
         },
         {
@@ -735,6 +787,10 @@
           },
           {
             "type": "twine",
+            "named": true
+          },
+          {
+            "type": "ward",
             "named": true
           },
           {
@@ -819,7 +875,7 @@
       },
       "name": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -867,6 +923,24 @@
             "type": "text",
             "named": true
           },
+          {
+            "type": "thread_pattern",
+            "named": true
+          },
+          {
+            "type": "twine_pattern",
+            "named": true
+          },
+          {
+            "type": "wildcard",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": false,
+        "required": false,
+        "types": [
           {
             "type": "thread_pattern",
             "named": true
@@ -1022,6 +1096,10 @@
           "named": true
         },
         {
+          "type": "ward",
+          "named": true
+        },
+        {
           "type": "web",
           "named": true
         }
@@ -1117,6 +1195,10 @@
         },
         {
           "type": "twine",
+          "named": true
+        },
+        {
+          "type": "ward",
           "named": true
         },
         {
@@ -1280,6 +1362,10 @@
           "named": true
         },
         {
+          "type": "ward",
+          "named": true
+        },
+        {
           "type": "web",
           "named": true
         }
@@ -1430,6 +1516,10 @@
         },
         {
           "type": "twine",
+          "named": true
+        },
+        {
+          "type": "ward",
           "named": true
         },
         {
@@ -1646,6 +1736,10 @@
             "named": true
           },
           {
+            "type": "ward",
+            "named": true
+          },
+          {
             "type": "web",
             "named": true
           }
@@ -1658,6 +1752,10 @@
       "types": [
         {
           "type": "ward_arm",
+          "named": true
+        },
+        {
+          "type": "ward_arm_inline",
           "named": true
         }
       ]
@@ -1717,6 +1815,140 @@
           },
           {
             "type": "local_binding",
+            "named": true
+          },
+          {
+            "type": "pipeline",
+            "named": true
+          },
+          {
+            "type": "text",
+            "named": true
+          },
+          {
+            "type": "thread",
+            "named": true
+          },
+          {
+            "type": "twine",
+            "named": true
+          },
+          {
+            "type": "ward",
+            "named": true
+          },
+          {
+            "type": "web",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "character",
+            "named": true
+          },
+          {
+            "type": "constructor",
+            "named": true
+          },
+          {
+            "type": "constructor_pattern",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "text",
+            "named": true
+          },
+          {
+            "type": "thread_pattern",
+            "named": true
+          },
+          {
+            "type": "twine_pattern",
+            "named": true
+          },
+          {
+            "type": "wildcard",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "ward_arm_inline",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "application",
+            "named": true
+          },
+          {
+            "type": "character",
+            "named": true
+          },
+          {
+            "type": "constructor",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "hole",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "inline_let",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "lambda",
             "named": true
           },
           {
@@ -1885,6 +2117,10 @@
             "named": true
           },
           {
+            "type": "ward",
+            "named": true
+          },
+          {
             "type": "web",
             "named": true
           }
@@ -1955,6 +2191,10 @@
             "named": true
           },
           {
+            "type": "ward",
+            "named": true
+          },
+          {
             "type": "web",
             "named": true
           }
@@ -2012,6 +2252,10 @@
     "named": false
   },
   {
+    "type": "aft",
+    "named": false
+  },
+  {
     "type": "as",
     "named": false
   },
@@ -2041,6 +2285,10 @@
     "named": true
   },
   {
+    "type": "fore",
+    "named": false
+  },
+  {
     "type": "former",
     "named": false
   },
@@ -2065,11 +2313,11 @@
     "named": false
   },
   {
-    "type": "it",
+    "type": "latter",
     "named": false
   },
   {
-    "type": "latter",
+    "type": "mid",
     "named": false
   },
   {

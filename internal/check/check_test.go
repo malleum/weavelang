@@ -569,3 +569,117 @@ func TestAPlainCallBlamesTheArgument(t *testing.T) {
 		t.Errorf("reported at column %d, want 12\n%s", got.Pos.Col, bag)
 	}
 }
+
+// Piping a collection into a verb that names it first used to fail with a
+// Talent complaint about the type the verb wanted in a slot the author was not
+// thinking about, which said nothing about what had gone wrong. The convention
+// is deliberate — it is what lets a Web thread through a fold — so the error
+// has to teach it.
+func TestPipingIntoACollectionVerbSaysSo(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{"a Web", "w is web [(1, 2)]\na is w | put 3 4\nlen a\n",
+			"`put` names its Web first"},
+		{"a Circle", "c is circle [1]\na is c | insert 5\nlen (members a)\n",
+			"`insert` names its Circle first"},
+		{"reading one", "w is web [(1, 2)]\na is w | get 1\nair a\n",
+			"`get` names its Web first"},
+		{"a Pattern", "g is \"ab\" | pattern\na is g | set (knot 0 0) 'x'\ncells a | len\n",
+			"`set` names its Pattern first"},
+		{"a Link", "l is link [1 2]\na is l | bind 1 2\nclumped a | len\n",
+			"`bind` names its Link first"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { fails(t, c.src, c.want) })
+	}
+}
+
+// The other half, and the reason this cannot simply refuse `| put`: piping the
+// *value* in is how a Web verb belongs in a pipeline, and it type-checks.
+func TestPipingTheValueIntoACollectionVerbIsFine(t *testing.T) {
+	ok(t, "w is web [(1, 2)]\na is 9 | put w 3\nlen a\n")
+	ok(t, "c is circle [1]\na is 5 | insert c\nmembers a | len\n")
+}
+
+// A binding may take its value apart the way a parameter does.
+func TestABindingTakesItsValueApart(t *testing.T) {
+	info := ok(t, "f p is\n  weave (a, b) is p\n  add a b\n\nf (1, 2)\n")
+	if got := declType(t, info, "f"); got != "(a, a) -> a  where Reckon a" {
+		t.Errorf("f :: %s", got)
+	}
+	ok(t, "f p is\n  weave ((a, b), c) is p\n  add a (add b c)\n\nf ((1, 2), 3)\n")
+	ok(t, "f p is\n  weave (a, _) is p\n  a\n\nf (1, 2)\n")
+	ok(t, "f p is weave (a, b) is p into add a b\n\nf (1, 2)\n")
+	// The names are in scope for later bindings, not only for the body.
+	ok(t, "f p is\n  weave (a, b) is p\n  weave s is add a b\n  mul s 2\n\nf (1, 2)\n")
+}
+
+// The pattern has to line up with what the value is.
+func TestABindingPatternIsChecked(t *testing.T) {
+	fails(t, "f p is\n  weave (a, b) is p\n  add a b\n\nf 1\n", "Reckon")
+	fails(t, "f p is\n  weave (a, b) is p\n  add a b\n\nf (1, \"x\")\n", "Reckon")
+}
+
+// One pattern and no alternative, so it has to cover everything — the same rule
+// a one-armed ward is held to, reported the same way.
+func TestARefutableBindingSaysSo(t *testing.T) {
+	fails(t, "f h is\n  weave (Held n) is h\n  n\n\nf (nth 0 [5])\n",
+		"this binding does not handle every case")
+	fails(t, "f xs is\n  weave [a, b] is xs\n  add a b\n\nf [1 2]\n",
+		"this binding does not handle every case")
+}
+
+// A top-level definition may take its value apart too. It expands into one
+// hidden definition holding the value and a projection per name, so the value
+// is worked out once however many names read it.
+func TestATopLevelDefinitionTakesItsValueApart(t *testing.T) {
+	ok(t, "(a, b) is (1, 2)\n\nadd a b\n")
+	ok(t, "((a, b), c) is ((1, 2), 3)\n\nadd a (add b c)\n")
+	ok(t, "(a, _) is (7, 9)\n\na\n")
+	// Order does not matter: a top-level value is an accessor, not a statement.
+	ok(t, "total is add w h\n\n(w, h) is (3, 4)\n\ntotal\n")
+	// Two of them do not collide.
+	ok(t, "(a, b) is (1, 2)\n\n(c, d) is (3, 4)\n\nadd (add a b) (add c d)\n")
+	fails(t, "(a, b) is 1\n\nadd a b\n", "this Twine pattern is (a, b), but Earth was expected")
+}
+
+// The generated wards say what the reader wrote, and say it once rather than
+// once per name the pattern binds.
+func TestARefutableTopLevelBindingIsReportedOnce(t *testing.T) {
+	bag := checkSource(t, "[a, b] is [1 2]\n\nadd a b\n")
+	if n := len(bag.All()); n != 1 {
+		t.Errorf("expected one diagnostic, got %d:\n%s", n, bag)
+	}
+	if !strings.Contains(bag.String(), "this binding does not handle every case") {
+		t.Errorf("got:\n%s", bag)
+	}
+}
+
+// `nth`, `first` and `last` answer with an element, and what an element is
+// depends on what it came out of. That is a relation between two types rather
+// than a property of one, so it rides as a Strand constraint rather than a
+// Talent.
+func TestTheElementVerbsReadTextToo(t *testing.T) {
+	info := ok(t, "second is nth 1 \"hello\" else '?'\n\nair second\n")
+	if got := declType(t, info, "second"); got != "Fire" {
+		t.Errorf("second :: %s", got)
+	}
+	ok(t, "air (first \"hi\" else '?')\n")
+	ok(t, "air (last \"hi\" else '?')\n")
+	// The Thread reading is untouched, including its element type.
+	ok(t, "air (nth 0 [[1 2] [3]] else [])\n")
+	ok(t, "f xs is first xs else 0\n\nair (f [7 8])\n")
+	// A container that is neither is a mistake, reported at the verb.
+	fails(t, "air (first (web [(1, 2)]) else 0)\n", "`first`: expected Web a b, found Thread a")
+	fails(t, "air (nth 0 5 else 0)\n", "`nth`: Thread a has no Reckon Talent")
+}
+
+// The container has to be known where the verb is written. Anywhere it is not,
+// the Thread reading is what it settles on — which is what the language did
+// before text was carried at all, and what a reader expects.
+func TestTheElementVerbsSettleOnThread(t *testing.T) {
+	// A helper generalises over Threads, so text at the call site is refused
+	// rather than silently reinterpreted.
+	fails(t, "head xs is first xs\n\nair (head \"ab\")\n", "expects Thread a here, but found Air")
+	// Passed as a value with nothing applied, it is a Thread verb.
+	ok(t, "air ([[1 2] [3]] | bend first | compact)\n")
+}

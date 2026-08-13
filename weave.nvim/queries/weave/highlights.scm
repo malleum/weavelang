@@ -20,50 +20,53 @@
 ; Names the compiler already knows. Colouring them apart from the program's
 ; own definitions is the quickest way to spot a mistyped verb.
 
-; `gives`, `it` and `this` are spellings of `:` and `_`, so they colour as the
-; symbols they stand for rather than as words. `that`, `former` and `latter`
-; are the other arguments a group can be handed, and colour with them.
+; `gives` and `this` are spellings of `:` and `_`, so they colour as the
+; symbols they stand for rather than as words. `that` is the second argument a
+; group can be handed; `former` and `latter` are the halves of a Twine of two
+; and `fore`, `mid` and `aft` the parts of one of three. They colour with them.
 ["gives" ".."] @operator
-["it" "this" "that" "former" "latter"] @variable.builtin
+["this" "that" "former" "latter" "fore" "mid" "aft"] @variable.builtin
 
 ((identifier) @function.builtin
   (#any-of? @function.builtin
-    "bend" "sift" "braid" "seek" "span" "flow" "len" "count" "sum" "prod"
+    "bend" "sift" "braid" "seek" "span" "under" "copies" "flow" "settle" "len" "count" "sum" "prod"
     "take" "drop" "zip" "zipwith" "sort" "all" "any" "first" "last" "rev"
-    "weld" "mend" "sever" "strands" "plait" "cull" "thread"
+    "weld" "mend" "sever" "strands" "plait" "cull" "thread" "turn" "wrap"
     "flat" "uniq" "bendr" "siftr" "zipr" "sums" "prods"
     "freq" "most" "chunk" "windows" "pivot" "sortby" "group" "idx"
-    "head" "tail" "second" "none" "enum" "scan" "gentle" "dupe" "top" "bot" "pairs" "cross"
-    "high" "low" "highidx" "lowidx" "seekidx" "twist"
+    "second" "none" "enum" "scan" "priors" "gentle" "dupe" "top" "bot" "pairs" "couples" "cross"
+    "high" "low" "highidx" "lowidx" "seekidx" "siftidx" "idxs" "index" "squeeze" "twist"
     "combos" "perms" "compact" "takewhile" "dropwhile" "mapcat" "maxby" "minby"
-    "nth" "has" "glean" "harvest" "cycle"
+    "nth" "has" "glean" "harvest" "cycle" "wind"
 
-    "lines" "words" "fires" "split" "strip" "join" "air" "earths" "waters" "contains"
+    "lines" "words" "carve" "fires" "split" "strip" "join" "air" "earths" "spans" "waters" "contains"
     "earth" "water" "fire"
     "blocks" "upper" "lower" "padl" "padr" "starts" "ends" "cutstart" "cutend"
-    "replace" "delve" "ord" "spark" "digit" "repeat" "bin"
+    "replace" "delve" "ord" "spark" "digit" "repeat" "base" "unbase"
 
-    "pattern" "weft" "spin" "flip" "cell" "set" "knots" "cells" "cellwise" "nb4" "nb8" "rows" "cols" "knot"
+    "pattern" "weft" "warp" "spin" "flip" "cell" "set" "knots" "tallies" "tallied" "sited" "sites" "cells" "cellwise" "nb4" "nb8" "rows" "cols" "knot"
     "row" "col" "shape" "inb" "dirs4" "dirs8" "around4" "around8" "mdist"
 
     "get" "put" "known" "forget" "keys" "vals" "items" "web" "merge" "mapvals"
-    "circle" "member" "insert" "remove" "members" "union" "inter" "diff"
-    "taveren" "push" "pop" "dijkstra" "reach" "route" "toposort"
+    "circle" "member" "insert" "remove" "members" "union" "inter" "diff" "covers"
+    "taveren" "push" "pop" "dijkstra" "reach" "route" "toposort" "clumps"
+    "link" "bind" "bound" "clumped"
 
     "add" "sub" "mul" "div" "mod" "gcd" "lcm" "abs" "neg" "min" "max"
     "inc" "dec" "even" "odd" "divBy" "sign" "sqrt" "cbrt" "ceil" "floor" "round" "clamp"
     "pow" "bor" "band" "bxor" "bnot" "shl" "shr" "pi" "e" "inf"
+    "solve"
 
     "eq" "neq" "lt" "lte" "gt" "gte" "and" "or" "not" "pick"
-    "otherwise" "holds" "rescue" "snag"
-    "overlaps" "overlapping" "within" "spanning" "holding" "width"
+    "otherwise" "holds" "woven" "rescue" "snag"
+    "overlaps" "overlapping" "within" "spanning" "holding" "width" "mesh"
     "isDigit" "isAlpha" "isSpace"))
 
 ; The Five Powers and the built-in type constructors.
 ((type_name) @type.builtin
   (#any-of? @type.builtin
     "Earth" "Water" "Fire" "Air" "Spirit"
-    "Thread" "Pattern" "Web" "Circle" "Taveren" "Knot" "Hold" "Weaving"))
+    "Thread" "Pattern" "Web" "Circle" "Taveren" "Link" "Knot" "Hold" "Weaving"))
 
 ((constructor) @constructor.builtin
   (#any-of? @constructor.builtin "Held" "Stilled" "Woven" "Gentled"))
@@ -96,13 +99,27 @@
 
 (signature name: (identifier) @function)
 
-(definition parameters: (identifier) @variable.parameter)
-(local_binding parameters: (identifier) @variable.parameter)
-(inline_binding parameters: (identifier) @variable.parameter)
-(lambda parameters: (identifier) @variable.parameter)
+; The `+` is not decoration. A field that repeats binds once per pattern, so
+; without it only the *first* parameter is captured and the rest fall back to
+; the plain `(identifier) @variable` above — which is why `rvrs l i t` used to
+; colour `l` differently from `i` and `t`.
+(definition parameters: (identifier)+ @variable.parameter)
+(local_binding parameters: (identifier)+ @variable.parameter)
+(inline_binding parameters: (identifier)+ @variable.parameter)
+(lambda parameters: (identifier)+ @variable.parameter)
+
+; And again for a list that opens with a pattern rather than a name, which is
+; how a clause dispatches: `step 0 xs p`, `f [a] b c`. A quantified capture
+; matches one run of adjacent children, so the run after the first one needs
+; asking for separately. A second leading pattern is where this stops, and a
+; definition with two of those is one to write out.
+(definition parameters: (_) parameters: (identifier)+ @variable.parameter)
+(local_binding parameters: (_) parameters: (identifier)+ @variable.parameter)
+(inline_binding parameters: (_) parameters: (identifier)+ @variable.parameter)
+(lambda parameters: (_) parameters: (identifier)+ @variable.parameter)
 
 (type_declaration name: (constructor) @type.definition)
-(type_declaration parameters: (identifier) @variable.parameter)
+(type_declaration parameters: (identifier)+ @variable.parameter)
 (constructor_declaration name: (constructor) @constructor)
 
 ; ---------------------------------------------------------------- keywords

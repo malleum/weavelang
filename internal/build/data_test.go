@@ -94,7 +94,7 @@ Node (Node Leaf 1 Leaf) 2 Leaf
 
 [Face "K", Num 9, Num 2, Face "A"] | sort
 `,
-			want: "Num 2\nNum 9\nFace A\nFace K",
+			want: "Num 2\nNum 9\nFace \"A\"\nFace \"K\"",
 		},
 		{
 			name: "values are usable as Web keys",

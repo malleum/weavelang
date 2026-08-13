@@ -37,6 +37,7 @@ typedef enum {
   W_WEB,     // map
   W_CIRCLE,  // set
   W_TAVEREN, // priority queue
+  W_LINK,    // disjoint sets: who is joined to whom
   W_DATA,    // a constructor of a declared sum type
 } WTag;
 
@@ -86,11 +87,50 @@ typedef struct {
   const char *bytes;
 } WAir;
 
+// A Thread has two layouts, and thr_at is what makes that invisible.
+//
+// The ordinary one is an array of Values: sixteen bytes an element, a tag and a
+// payload apiece, which is what a Thread of anything at all needs. The packed
+// one drops the tags — every element of a `Thread Earth` has the same one — and
+// keeps the payloads alone, eight bytes each, with the tag they share held in
+// `obj.kind`. A parsed Advent of Code input is millions of Earths, and half of
+// what it costs is the same four bytes written over and over.
+//
+// `elems == NULL` is what says which: a packed Thread has `raw` instead. The
+// header pays nothing for the second pointer — twenty-four bytes rounded up to
+// the allocator's thirty-two left eight going spare — and `obj.kind` was
+// written in a dozen places and read in none.
+//
+// Everything reads one element through thr_at and writes one through thr_put.
+// The field is `elems` and not `items` for exactly one reason: so that the C
+// compiler finds any place that forgets. The handful of verbs that want the
+// whole array at once — a weld, a sort, a rotate — ask thr_boxed for it, which
+// unpacks the Thread in place and leaves it ordinary from then on.
 typedef struct {
   WObj obj;
   size_t len;
-  Value *items;
+  Value *elems; // NULL when packed
+  int64_t *raw; // the shared-tag payloads, when packed
 } WThread;
+
+// What a packed Thread keeps in obj.kind: the tag its elements share, and
+// whether the payloads are its own or another Thread's. `take`, `drop` and the
+// rest hand back a window on their source's storage rather than copying it, so
+// a packed Thread is not always the one that allocated what it points at.
+#define W_THR_TAG 0xFFu
+#define W_THR_BORROWED 0x100u
+
+// thr_boxed hands back a Thread's elements as an ordinary array, unpacking it
+// first if it has to. The unpack is once per Thread and not once per call: it
+// replaces the packed storage, so a Thread that meets a bulk verb goes back to
+// being what it would have been all along.
+Value *thr_boxed(WThread *t);
+
+// thr_window is a Thread over part of another one's storage, in whichever
+// layout that one has. It is what keeps a packed Thread packed through the
+// verbs that only ever narrow it: unpacking to take a window would undo the
+// producer's work and cost half again as much as never packing at all.
+Value thr_window(WThread *t, size_t at, size_t len);
 
 typedef struct {
   WObj obj;
@@ -121,6 +161,19 @@ typedef struct {
   Value *cells; // row-major, rows*cols entries
 } WPattern;
 
+// WLink is who is joined to whom: a disjoint-set forest over the values it was
+// built from. `slots` and `nodes` are fixed once and shared by every Link
+// derived from this one, because binding never changes which values exist —
+// only `parent` and `rank` are copied when a shared Link is bound.
+typedef struct {
+  WObj obj;
+  Value slots;     // Web from a node to its position, built once
+  Value *nodes;    // the distinct nodes, in the order they were given
+  int32_t *parent; // position -> the position it answers to
+  int32_t *rank;
+  size_t len;
+} WLink;
+
 typedef struct WClosure WClosure;
 typedef Value (*WFn)(Value *env, Value *args);
 
@@ -132,6 +185,40 @@ struct WClosure {
   int32_t nenv;  // captured values, stored before the arguments
   Value *slots;  // nenv captures, then arity argument slots
 };
+
+// thr_at reads one element. It is the only way anything reads one.
+//
+// The branch is the whole cost of the packed layout, and it is the cheapest
+// kind there is: every read of a given Thread takes the same arm, so a loop
+// over one predicts perfectly after the first turn.
+static inline Value thr_at(const WThread *t, size_t i) {
+  if (t->elems != NULL)
+    return t->elems[i];
+  Value v;
+  v.tag = t->obj.kind & W_THR_TAG;
+  v.aux = 0;
+  v.earth = t->raw[i];
+  return v;
+}
+
+// thr_put writes one, which only a builder does — a Thread is immutable to the
+// program, and the places that call this are filling an array they have just
+// allocated or writing through one they own.
+//
+// A packed Thread can only hold the one tag, so a write of anything else has to
+// unpack it first. That is `mend`ing a Text into a Thread of Earths, which is
+// not a thing a typed program does; the check is here because thr_put must be
+// safe rather than because it is ever taken.
+static inline void thr_put(WThread *t, size_t i, Value v) {
+  if (t->elems == NULL) {
+    if (v.tag == (t->obj.kind & W_THR_TAG)) {
+      t->raw[i] = v.earth;
+      return;
+    }
+    thr_boxed(t);
+  }
+  t->elems[i] = v;
+}
 
 // ---------------------------------------------------------------- immediates
 
@@ -181,7 +268,7 @@ extern void *w_small[W_SMALL_CLASSES];
 extern char *w_bump, *w_bump_end;
 void *w_alloc_slow(size_t bytes);
 
-static inline void *w_alloc(size_t bytes) {
+static inline void *w_alloc_impl(size_t bytes) {
   bytes = (bytes + 15) & ~(size_t)15; // keep 16-byte alignment
   if (bytes == 0)
     bytes = 16;
@@ -201,10 +288,57 @@ static inline void *w_alloc(size_t bytes) {
   return w_alloc_slow(bytes);
 }
 
+// A place the arena had got to, and everything needed to put it back there.
+// Handing the storage of a whole loop turn back at once is what lets a
+// backtracking search forget the branches it abandons; see w_release in
+// weave.c, and regions.go in the compiler for when that is allowed.
+typedef struct {
+  struct Chunk *chunk;
+  char *bump, *bump_end;
+  uint64_t serial, frees;
+} WMark;
+
+WMark w_mark(void);
+void w_release(WMark m);
+
 // w_free hands a block back for the next allocation of the same size to reuse.
 // Only call it where nothing else can reach the block. See weave.c.
-void w_free(void *p, size_t bytes);
+void w_free_impl(void *p, size_t bytes);
 void w_init(void);
+
+// Accounting. The arena bump-allocates out of megabyte chunks, so a heap
+// profiler sees one `malloc` charged to whichever call happened to exhaust the
+// previous chunk and nothing at all about what went in it. `weave build -tally`
+// compiles a build that keeps its own books instead: every live block is
+// recorded against the source line that asked for it, and the breakdown at the
+// high-water mark is printed to stderr when the program ends. It is a debugging
+// build — the bookkeeping costs more than the allocation does. See tally.c.
+//
+// Redirecting the two entry points here is what makes it free when it is off,
+// and is why the real ones are named `_impl`.
+// A few things are too big or too long-lived to want the arena's free lists and
+// go straight to malloc — the flat tables behind a Web, a memo's slots. They
+// carry a size at the free so the tally can see them too.
+#ifdef WEAVE_TALLY
+void *w_alloc_at(const char *where, size_t bytes);
+void w_free_at(const char *where, void *p, size_t bytes);
+void *w_raw_alloc_at(const char *where, size_t bytes);
+void w_raw_free_at(void *p, size_t bytes);
+void w_tally_shrink(void *p, size_t from, size_t to);
+void w_tally_chunk(size_t bytes);
+void w_tally_start(void);
+#define W_AT__(f, l) f ":" #l
+#define W_AT_(f, l) W_AT__(f, l)
+#define w_alloc(bytes) w_alloc_at(W_AT_(__FILE__, __LINE__), (bytes))
+#define w_free(p, bytes) w_free_at(W_AT_(__FILE__, __LINE__), (p), (bytes))
+#define w_raw_alloc(bytes) w_raw_alloc_at(W_AT_(__FILE__, __LINE__), (bytes))
+#define w_raw_free(p, bytes) w_raw_free_at((p), (bytes))
+#else
+#define w_alloc(bytes) w_alloc_impl(bytes)
+#define w_free(p, bytes) w_free_impl((p), (bytes))
+#define w_raw_alloc(bytes) malloc(bytes)
+#define w_raw_free(p, bytes) ((void)(bytes), free(p))
+#endif
 
 // -------------------------------------------------------------------- text
 
@@ -221,10 +355,22 @@ Value w_source(void); // the program input, read from stdin
 Value w_thread(Value *items, size_t len);
 Value w_thread_copy(const Value *items, size_t len);
 
+// w_thread_packed adopts an array of payloads that all carry the tag `elem` —
+// one of the Powers that lives in the Value itself, W_THR_BORROWED added when
+// the payloads belong to another Thread. It is how a verb that knows what it is
+// producing — `earths` reading an input, above all — builds a Thread at eight
+// bytes to the element.
+Value w_thread_packed(int64_t *raw, size_t len, uint32_t elem);
+// w_thread_packed_fit is w_thread_fit for one of those: it hands the doubling
+// slack back before sealing the buffer.
+Value w_thread_packed_fit(int64_t *raw, size_t len, size_t cap, uint32_t elem);
+
 // w_regrow reallocates an arena buffer, copying the first n values across, and
 // hands the old one back to the free list. A fused loop over an endless `flow`
 // has no length to size against, so it collects into a buffer that doubles.
 Value *w_regrow(Value *items, size_t n, size_t cap);
+// w_regrow_packed is the same for a fused loop collecting into a packed Thread.
+int64_t *w_regrow_packed(int64_t *raw, size_t n, size_t cap);
 
 // w_thread_fit adopts a buffer that has room to spare, handing the unused tail
 // back to the allocator at its own size so a later request can match it.
@@ -241,18 +387,26 @@ void w_thread_release(Value t);
 // benchmark, all of it call overhead around a single dereference.
 static inline size_t w_thread_len(Value t) { return ((WThread *)t.obj)->len; }
 static inline Value w_thread_at(Value t, size_t i) {
-  return ((WThread *)t.obj)->items[i];
+  return thr_at(((WThread *)t.obj), i);
 }
 
 // --------------------------------------------------------------------- hold
 
-// A Held of one of the Powers is that value with its tag moved aside; anything
-// else keeps a WHold. Both are read back through w_hold_inner, and neither is
-// distinguishable from inside the language.
-static inline bool w_hold_fits(uint32_t tag) {
-  return tag == W_EARTH || tag == W_WATER || tag == W_FIRE || tag == W_SPIRIT ||
-         tag == W_KNOT;
-}
+// A Held keeps its value where it stands, with the inner tag moved aside into
+// `aux`. The payload is eight bytes either way — an `int64` or a pointer — so
+// what fits is not a question of size, and `aux` is read by nothing but the
+// Hold machinery itself.
+//
+// There is exactly one thing that cannot be flattened: a Held of a Held. The
+// inner one is already using `aux` for *its* inner tag, and there is only one
+// such field, so that case keeps a WHold and everything else does not. That
+// includes every heap value — a Thread, a Web, some text — which is what makes
+// `nth i xs else 0` free: `nth` used to allocate a WHold per element read out
+// of a Thread of Threads, six million of them in Advent of Code 2025 day 8.
+//
+// Both forms are read back through w_hold_inner, and neither is distinguishable
+// from inside the language.
+static inline bool w_hold_fits(uint32_t tag) { return tag != W_HOLD; }
 
 Value w_held_boxed(Value inner); // the WHold case, out of line
 
@@ -354,6 +508,9 @@ Value w_web_forget(Value web, Value key);
 Value w_web_forget_owned(Value web, Value key);
 Value w_web_get(Value web, Value key);
 bool w_web_has(Value web, Value key);
+// w_web_find is w_web_has that also hands over what it found, for a caller that
+// wants the value and has no use for the Hold w_web_get would wrap it in.
+bool w_web_find(Value web, Value key, Value *out);
 size_t w_web_size(Value web);
 Value w_web_keys(Value web);
 Value w_web_vals(Value web);
@@ -394,9 +551,23 @@ void w_print_result(Value v);
 void w_trace(int64_t line, const char *name, Value v);
 void w_trace_text(int64_t line, const char *name, const char *text);
 
+// Watching one function's calls, for `weave trace -watch`. w_watch_enter starts
+// a call and w_watch records what one of its names held; w_watch_flush writes
+// the count and whatever the ring still holds when the program stops.
+int64_t w_watch_enter(void);
+void w_watch(int64_t call, int64_t line, const char *name, Value v);
+void w_watch_flush(void);
+
 // Errors abort with a message; they signal a bug in the compiler or a
 // genuinely impossible situation, never ordinary program failure.
 _Noreturn void w_fail(const char *msg);
+
+// What a program exits with when WEAVE_MEM_CAP is set and it has gone past the
+// ceiling. It is its own code so that `weave trace` can tell "this definition
+// wants more memory than I am willing to give it" apart from a program that
+// stopped for a reason of its own — the first is reported the same way running
+// out of time is, and the second is not.
+#define W_EXIT_OVER_MEMORY 9
 
 
 // ------------------------------------------------------- prelude verbs
@@ -420,6 +591,28 @@ Value wp_isAlpha(Value a);
 Value wp_isDigit(Value a);
 Value wp_isSpace(Value a);
 Value wp_knots(Value a);
+Value wp_tallies(Value g);
+Value wp_tallied(Value g, Value a, Value b);
+Value wp_carve(Value seps, Value text);
+Value wp_link(Value nodes);
+Value wp_under(Value n);
+Value wp_copies(Value n, Value v);
+Value wp_woven(Value w);
+Value wp_covers(Value outer, Value inner);
+Value wp_warp(Value f, Value rows, Value cols);
+Value wp_sited(Value g, Value v);
+Value wp_sites(Value g, Value v);
+Value wp_bind(Value l, Value a, Value b);
+Value wp_bind_owned(Value l, Value a, Value b);
+Value wp_bound(Value l, Value a, Value b);
+Value wp_clumped(Value l);
+
+// What a fused grid loop needs to walk a Pattern without building a Thread.
+extern const int8_t w_grid_dr[8];
+extern const int8_t w_grid_dc[8];
+size_t w_pattern_shape(Value g, size_t *rows, size_t *cols);
+bool w_pattern_in(Value g, int64_t r, int64_t c);
+Value w_pattern_cell(Value g, int64_t r, int64_t c);
 Value wp_last(Value a);
 Value wp_lines(Value a);
 Value wp_neg(Value a);
@@ -469,6 +662,12 @@ Value wp_rescue(Value a, Value b);
 Value wp_snag(Value a, Value b);
 Value wp_dijkstra(Value a, Value b);
 Value wp_reach(Value step, Value start);
+Value wp_clumps(Value step, Value nodes);
+Value wp_settle(Value f, Value x);
+Value wp_couples(Value xs);
+Value wp_index(Value xs);
+Value wp_squeeze(Value vs);
+Value wp_mesh(Value ranges);
 Value wp_route(Value step, Value start, Value goal);
 Value wp_toposort(Value step, Value nodes);
 Value wp_cellwise(Value a, Value b);
@@ -478,6 +677,8 @@ Value wp_zipwith(Value a, Value b, Value c);
 Value wp_thread(Value tw);
 Value wp_weld(Value extra, Value xs);
 Value wp_mend(Value at, Value v, Value xs);
+Value wp_wind(Value at, Value v, Value xs);
+Value wp_wind_owned(Value at, Value v, Value xs);
 Value wp_mend_owned(Value at, Value v, Value xs);
 Value wp_sever(Value n, Value xs);
 Value wp_strands(Value key, Value xs);
@@ -529,11 +730,16 @@ Value wp_pop(Value heap);
 
 // Extra sequence and text verbs.
 Value wp_earths(Value text);
+Value wp_spans(Value text);
 Value wp_waters(Value text);
 Value wp_chunk(Value n, Value xs);
 Value wp_windows(Value n, Value xs);
 Value wp_pivot(Value xss);
 Value wp_gcd(Value a, Value b);
+// wp_solve reads a Pattern of Earths as an augmented matrix and answers with a
+// Weaving: Woven with the one whole-number solution, or Gentled with a point
+// and the directions the solution set runs in. See prelude.c.
+Value wp_solve(Value grid);
 Value wp_lcm(Value a, Value b);
 Value wp_sortby(Value key, Value xs);
 Value wp_group(Value key, Value xs);
@@ -547,12 +753,23 @@ Value wp_spin(Value g);
 Value wp_flip(Value g);
 Value wp_perms(Value xs);
 Value wp_contains(Value needle, Value text);
+Value wp_turn(Value n, Value xs);
+Value wp_wrap(Value at, Value xs);
 
 
-// w_disown marks an object shared again. The compiler emits it where a grid a
-// loop owns escapes to its caller, since the caller may keep it.
+// w_disown marks an object shared again. The compiler emits it where a
+// collection a loop owns escapes to its caller, since the caller may keep it.
+//
+// Every type that can be owned has to be here, and this list must equal the
+// `ownables` table in internal/codegen/inplace.go. `W_THREAD` was missing from
+// the day Threads gained in-place updating, and it was a wrong answer: an owned
+// Thread escaped still writable, so a second loop over one wrote through the
+// first loop's result. It hid because the shape that shows it has to read the
+// older value *after* the later loop has run, and the natural way to write that
+// test reads it before.
 static inline Value w_disown(Value v) {
-  if (v.obj && (v.tag == W_PATTERN || v.tag == W_WEB || v.tag == W_CIRCLE))
+  if (v.obj && (v.tag == W_PATTERN || v.tag == W_WEB || v.tag == W_CIRCLE ||
+                v.tag == W_LINK || v.tag == W_THREAD))
     v.obj->rc = W_SHARED;
   return v;
 }
@@ -668,7 +885,8 @@ static inline Value w_not_s(Value a) { return w_spirit(!a.spirit); }
 
 // Verbs added alongside the rask-aligned naming pass.
 
-Value wp_bin(Value a);
+Value wp_base(Value b, Value n);
+Value wp_unbase(Value b, Value text);
 Value wp_blocks(Value a);
 Value wp_bnot(Value a);
 Value wp_cbrt(Value a);
@@ -678,7 +896,6 @@ Value wp_digit(Value a);
 Value wp_compact(Value a);
 Value wp_enum(Value a);
 Value wp_floor(Value a);
-Value wp_head(Value a);
 Value wp_lower(Value a);
 Value wp_ord(Value a);
 Value wp_pairs(Value a);
@@ -687,7 +904,6 @@ Value wp_second(Value a);
 Value wp_shape(Value a);
 Value wp_sign(Value a);
 Value wp_sqrt(Value a);
-Value wp_tail(Value a);
 Value wp_upper(Value a);
 Value wp_around4(Value a, Value b);
 Value wp_around8(Value a, Value b);
@@ -727,12 +943,15 @@ Value wp_replace(Value a, Value b, Value c);
 // else has to match exactly, and the shape has to account for the whole line.
 Value wp_delve(Value shape, Value text);
 Value wp_scan(Value a, Value b, Value c);
+Value wp_priors(Value a, Value b, Value c);
 Value wp_dupe(Value xs);
 Value wp_high(Value xs);
 Value wp_low(Value xs);
 Value wp_highidx(Value xs);
 Value wp_lowidx(Value xs);
 Value wp_seekidx(Value p, Value xs);
+Value wp_siftidx(Value p, Value xs);
+Value wp_idxs(Value v, Value xs);
 Value wp_twist(Value at, Value f, Value xs);
 Value wp_twist_owned(Value at, Value f, Value xs);
 Value wp_overlaps(Value a, Value b);

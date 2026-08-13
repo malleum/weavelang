@@ -30,3 +30,9 @@ func Files() map[string][]byte {
 
 // CSources lists the runtime files that must be passed to the C compiler.
 var CSources = []string{"weave.c", "prelude.c", "collections.c"}
+
+// TallySource is the arena's bookkeeping, which `weave build -tally` adds to
+// the list above. It is `#ifdef`ed away without the flag, so compiling it into
+// every ordinary build would buy an empty object file and a slower compile —
+// and the compile is most of what a small build costs.
+const TallySource = "tally.c"

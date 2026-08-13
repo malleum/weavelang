@@ -169,13 +169,49 @@ answer
 	}
 }
 
-// TestSingleStageIsNotFused documents the cutoff: rewriting one runtime verb
-// as a loop wins nothing and only makes the generated C bigger.
+// TestSingleStageIsNotFused documents the cutoff, and where it moved to.
+//
+// Rewriting one runtime verb as a loop wins nothing when the verb is going to
+// be called anyway — so a lone stage over a Thread, with a function the loop
+// would have to call through, stays a runtime call.
+//
+// Two things now cross that line. A *generated* producer — a span, or one of
+// the grid walks — never builds the array the verb would have read, so one
+// stage is already a saving. And a function written out on the spot is inlined
+// by the loop, so what goes away is the closure built every time the enclosing
+// function runs plus the indirect call per element; that is worth it with no
+// stage to remove at all.
 func TestSingleStageIsNotFused(t *testing.T) {
-	c := generate(t, "answer is span 1 10 | bend (x : mul x x)\nanswer")
-	if !strings.Contains(c, "wp_bend(") {
-		t.Errorf("a lone bend should stay a runtime call:\n%s", c)
-	}
+	t.Run("a lone stage over a Thread with a named function", func(t *testing.T) {
+		c := generate(t, "square x is mul x x\nanswer is [1 2 3] | bend square\nanswer")
+		if !strings.Contains(c, "wp_bend(") {
+			t.Errorf("a lone bend should stay a runtime call:\n%s", c)
+		}
+	})
+
+	t.Run("a lone stage over a span is fused: the array is the saving", func(t *testing.T) {
+		c := generate(t, "square x is mul x x\nanswer is span 1 10 | bend square\nanswer")
+		if strings.Contains(c, "wp_bend(") {
+			t.Errorf("a span has no array to read, so this should fuse:\n%s", c)
+		}
+	})
+
+	t.Run("a lone lambda stage is fused: the closure is the saving", func(t *testing.T) {
+		c := generate(t, "answer is [1 2 3] | bend (x : mul x x)\nanswer")
+		if strings.Contains(c, "wp_bend(") {
+			t.Errorf("a lambda stage should be inlined into a loop:\n%s", c)
+		}
+		if strings.Contains(c, "w_closure(") {
+			t.Errorf("the inlined lambda should need no closure:\n%s", c)
+		}
+	})
+
+	t.Run("a lone lambda predicate is fused", func(t *testing.T) {
+		c := generate(t, "answer is [1 2 3] | count (x : odd x)\nanswer")
+		if strings.Contains(c, "wp_count(") {
+			t.Errorf("a lambda predicate should be inlined into a loop:\n%s", c)
+		}
+	})
 }
 
 // TestSpanIsGeneratedNotBuilt checks that a range pipeline allocates nothing:
@@ -199,5 +235,38 @@ func TestNonThreadSizeIsNotFused(t *testing.T) {
 	c := generate(t, "len (circle [1 2 3])")
 	if !strings.Contains(c, "wp_len(") {
 		t.Errorf("len over a Circle must stay a runtime call:\n%s", c)
+	}
+}
+
+// `drop` and `dropwhile` are stages, so the runtime verbs disappear from a
+// fused chain the way `take` and `takewhile` already did — and, more to the
+// point, an endless producer survives one.
+func TestDropIsAStage(t *testing.T) {
+	cases := []struct {
+		name, src string
+		gone      []string
+	}{
+		{"drop", "span 1 20 | drop 4 | sum", []string{"wp_drop", "wp_span", "wp_sum"}},
+		{"dropwhile", "span 1 20 | dropwhile (gt 5) | sum", []string{"wp_dropwhile", "wp_sum"}},
+		{"drop then take", "span 1 20 | drop 4 | take 3 | sum", []string{"wp_drop", "wp_take"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := generate(t, tc.src)
+			for _, verb := range tc.gone {
+				if strings.Contains(c, verb+"(") {
+					t.Errorf("expected %s to be fused away:\n%s", verb, c)
+				}
+			}
+		})
+	}
+}
+
+// Text is not something the loop fuser knows how to walk, so `drop` on it stays
+// the verb it was — the same rule `take` follows.
+func TestDropOnTextIsNotAStage(t *testing.T) {
+	c := generate(t, "Source | drop 2 | len")
+	if !strings.Contains(c, "wp_drop(") {
+		t.Errorf("expected the verb to survive:\n%s", c)
 	}
 }

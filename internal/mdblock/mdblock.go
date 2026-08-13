@@ -25,6 +25,15 @@ type Block struct {
 	// one. A block shown without its output is only required to compile.
 	Want    string
 	HasWant bool
+	// Fragment marks a block fenced ```weave-part rather than ```weave: an
+	// illustration rather than a program, written with names it never defines.
+	// The spec is full of them — `xs | braid (acc x : add acc x) 0` says what a
+	// lambda looks like and has no business having an `xs`.
+	//
+	// A fragment is still parsed, so its *syntax* cannot rot; it is not checked
+	// or run, because there is nothing there to run. Editors treat it exactly as
+	// they treat any other block.
+	Fragment bool
 }
 
 // End is the line after the block's last line of code.
@@ -33,15 +42,18 @@ func (b Block) End() int { return b.Line + strings.Count(b.Src, "\n") }
 // Contains reports whether a zero-based document line falls inside the block.
 func (b Block) Contains(line int) bool { return line >= b.Line && line < b.End() }
 
-// Blocks returns every ```weave block in the document, in order.
+// Blocks returns every ```weave and ```weave-part block in the document, in
+// order.
 func Blocks(doc string) []Block {
 	var out []Block
 	lines := strings.Split(doc, "\n")
 
 	for i := 0; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) != "```weave" {
+		fence := strings.TrimSpace(lines[i])
+		if fence != "```weave" && fence != "```weave-part" {
 			continue
 		}
+		fragment := fence == "```weave-part"
 		start := i + 1
 		end := start
 		for end < len(lines) && strings.TrimSpace(lines[end]) != "```" {
@@ -50,7 +62,7 @@ func Blocks(doc string) []Block {
 		if end >= len(lines) {
 			break
 		}
-		b := Block{Line: start, Src: strings.Join(lines[start:end], "\n") + "\n"}
+		b := Block{Line: start, Src: strings.Join(lines[start:end], "\n") + "\n", Fragment: fragment}
 
 		// A bare ``` fence within the next few lines is the expected output.
 		for j := end + 1; j < len(lines) && j <= end+3; j++ {

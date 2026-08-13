@@ -9,17 +9,22 @@ package lsp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/malleum/weave/internal/ast"
 	"github.com/malleum/weave/internal/check"
 	"github.com/malleum/weave/internal/codegen"
 	"github.com/malleum/weave/internal/diag"
+	"github.com/malleum/weave/internal/docs"
 	"github.com/malleum/weave/internal/format"
 	"github.com/malleum/weave/internal/lexer"
 	"github.com/malleum/weave/internal/mdblock"
@@ -36,15 +41,29 @@ func Serve(in io.Reader, out io.Writer) error {
 		w:    out,
 		docs: map[string]string{},
 	}
+	if path := os.Getenv("WEAVE_LSP_LOG"); path != "" {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		s.logf = f
+		s.log("weave lsp started, pid %d", os.Getpid())
+	}
 	return s.run()
 }
 
 type server struct {
-	r  *bufio.Reader
-	w  io.Writer
-	mu sync.Mutex
+	r    *bufio.Reader
+	w    io.Writer
+	mu   sync.Mutex
+	logf io.Writer
 
 	docs map[string]string // uri -> text
+
+	// panicOn makes handle panic on one method, so that the recovery around it
+	// can be checked. Nothing sets it outside a test.
+	panicOn string
 }
 
 // ------------------------------------------------------------- JSON-RPC
@@ -73,19 +92,76 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// The server outlives whatever any one message does to it.
+//
+// It is a compiler front end wired to an editor, which means it is handed a
+// half-typed program several times a second — and the one thing it must not do
+// is stop. A process that dies takes the client with it, and a client that has
+// gone needs the editor restarted, not the server: `:LspRestart` cannot revive
+// a buffer whose client was reaped. So a panic in the front end is caught and
+// answered, and a message that cannot be read is stepped over.
+//
+// Only the framing is fatal. Once the stream is out of step there is no honest
+// way to find the next message, and pretending otherwise would answer the wrong
+// request.
 func (s *server) run() error {
 	for {
 		msg, err := s.read()
 		if err == io.EOF {
 			return nil
 		}
+		if errors.Is(err, errBadMessage) {
+			s.log("skipped an unreadable message: %v", err)
+			continue
+		}
 		if err != nil {
+			s.log("stopping: %v", err)
 			return err
 		}
-		if err := s.handle(msg); err != nil {
+		if err := s.serve(msg); err != nil {
+			s.log("stopping: %v", err)
 			return err
 		}
 	}
+}
+
+// serve handles one message and survives it.
+//
+// A panic is the front end meeting something it was not written for, which is
+// what a program being typed into is made of. The request is answered with an
+// error so the editor is not left waiting, the panic is logged with its stack,
+// and the next keystroke gets a working server.
+func (s *server) serve(msg *message) (err error) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		s.log("panic handling %s: %v\n%s", msg.Method, r, debug.Stack())
+		if msg.ID != nil {
+			err = s.write(&message{ID: msg.ID, Error: &rpcError{
+				Code: -32603, Message: fmt.Sprintf("weave: %v", r),
+			}})
+		}
+	}()
+	start := time.Now()
+	err = s.handle(msg)
+	s.log("%s in %s", msg.Method, time.Since(start).Round(time.Microsecond))
+	return err
+}
+
+// log writes a line to the file WEAVE_LSP_LOG names, and nowhere if it names
+// nothing. Standard output is the protocol and standard error is the editor's
+// to show, so a server that wants to say something to a person needs somewhere
+// else to say it.
+func (s *server) log(format string, args ...any) {
+	if s.logf == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprintf(s.logf, "%s %s\n",
+		time.Now().Format("15:04:05.000"), fmt.Sprintf(format, args...))
 }
 
 // read pulls one Content-Length framed message.
@@ -109,7 +185,9 @@ func (s *server) read() (*message, error) {
 		}
 	}
 	if length == 0 {
-		return nil, io.EOF
+		// A header block with no Content-Length in it. There is no body to
+		// step over, so the next read starts where this one left off.
+		return nil, fmt.Errorf("%w: no Content-Length", errBadMessage)
 	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(s.r, body); err != nil {
@@ -117,10 +195,16 @@ func (s *server) read() (*message, error) {
 	}
 	var msg message
 	if err := json.Unmarshal(body, &msg); err != nil {
-		return nil, err
+		// The body was read whole, so the stream is still in step and the
+		// message can simply be dropped.
+		return nil, fmt.Errorf("%w: %v", errBadMessage, err)
 	}
 	return &msg, nil
 }
+
+// errBadMessage marks a message that could not be read but that left the stream
+// where the next one begins.
+var errBadMessage = errors.New("unreadable message")
 
 func (s *server) write(msg *message) error {
 	msg.JSONRPC = "2.0"
@@ -159,6 +243,9 @@ func (s *server) notify(method string, params any) error {
 // ------------------------------------------------------------- dispatch
 
 func (s *server) handle(msg *message) error {
+	if s.panicOn != "" && msg.Method == s.panicOn {
+		panic("provoked")
+	}
 	switch msg.Method {
 	case "initialize":
 		return s.reply(msg.ID, map[string]any{
@@ -345,6 +432,21 @@ func severity(d diag.Diagnostic) int {
 
 // ------------------------------------------------------------------ hover
 
+// prose is the line of description an editor shows beside a name.
+//
+// It is the gloss `weave docs` carries, not the plain description the compiler
+// keeps for diagnostics. The two are written for different readers: a
+// diagnostic may be someone's first meeting with a verb, while someone hovering
+// it in their own file already writes Weave and is looking a name up, which is
+// exactly the reader the reference page is written for. The plain description
+// stands in for anything the page has no card for.
+func prose(name, plain string) string {
+	if g := docs.Gloss(name); g != "" {
+		return g
+	}
+	return plain
+}
+
 func (s *server) hover(params json.RawMessage) any {
 	uri, pos := documentPosition(params)
 	v, local, ok := s.viewAt(uri, pos)
@@ -380,6 +482,14 @@ func (s *server) describe(src, uri, word string, at token.Pos) string {
 		fmt.Fprintf(&b, "```weave\n%s :: %s\n```", word, t)
 	}
 
+	// Where a name is bound, that name is this one and no other. Every lookup
+	// below goes by name rather than by position, so a parameter called `sum`
+	// would otherwise be answered with the verb's signature — the one thing it
+	// certainly is not.
+	if _, bound := info.Binds[at]; bound {
+		return b.String()
+	}
+
 	if sch, ok := info.Decls[word]; ok {
 		b.Reset()
 		fmt.Fprintf(&b, "```weave\n%s :: %s\n```", word, types.SchemeString(sch))
@@ -393,13 +503,13 @@ func (s *server) describe(src, uri, word string, at token.Pos) string {
 		if e.Where != "" {
 			sig += "  where " + e.Where
 		}
-		fmt.Fprintf(&b, "```weave\n%s :: %s\n```\n\n%s", word, sig, e.Doc)
+		fmt.Fprintf(&b, "```weave\n%s :: %s\n```\n\n%s", word, sig, prose(word, e.Doc))
 	}
 	if c, ok := preludeCtor(word); ok {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
-		fmt.Fprintf(&b, "```weave\n%s :: %s\n```\n\n%s", word, c.Sig, c.Doc)
+		fmt.Fprintf(&b, "```weave\n%s :: %s\n```\n\n%s", word, c.Sig, prose(word, c.Doc))
 	}
 	for _, td := range file.Types {
 		if td.Name == word {
@@ -477,6 +587,11 @@ func typeExprString(t *ast.TypeExpr, atom bool) string {
 
 // typeAtPos finds the expression that starts exactly here and returns its type.
 func typeAtPos(info *check.Info, at token.Pos) string {
+	// Where a name is bound. Asked first, because a name bound in an inner
+	// scope shadows the outer one and the binder is the inner one.
+	if t, ok := info.Binds[at]; ok {
+		return types.String(t)
+	}
 	for e, t := range info.Types {
 		p := e.Pos()
 		if p.Line != at.Line || p.Col != at.Col {
@@ -552,10 +667,10 @@ func (s *server) complete(params json.RawMessage) any {
 		if e.Where != "" {
 			detail += "  where " + e.Where
 		}
-		add(e.Name, detail, e.Doc, 3)
+		add(e.Name, detail, prose(e.Name, e.Doc), 3)
 	}
 	for _, c := range prelude.Ctors {
-		add(c.Name, c.Sig, c.Doc, 4) // constructor
+		add(c.Name, c.Sig, prose(c.Name, c.Doc), 4) // constructor
 	}
 	// Read from the token table rather than written out again, so a word
 	// cannot be reserved without the editor knowing it. `it` and `_` are the
@@ -591,7 +706,7 @@ func (s *server) signature(params json.RawMessage) any {
 		if e.Where != "" {
 			label += "  where " + e.Where
 		}
-		doc = e.Doc
+		doc = prose(name, e.Doc)
 	} else {
 		bag := diag.New(uri, src)
 		file := parser.Parse(src, bag)

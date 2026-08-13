@@ -202,14 +202,11 @@ var continuationWords = []string{"where", "as", "through", "else", "failing"}
 // from the token table so that a word cannot be reserved without the editor
 // knowing it.
 //
-// `_` and `it` are left out: they are the same token as `this`, and three ways
-// to complete one thing is noise. `this` is the one `weave fmt` prints.
+// `_` is left out because it is not a word; `this` is the spelling of it that
+// `weave fmt` prints.
 func CompletionKeywords() []string {
 	var out []string
 	for name := range token.Keywords() {
-		if name == "it" {
-			continue
-		}
 		out = append(out, name)
 	}
 	sort.Strings(out)

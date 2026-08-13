@@ -23,6 +23,10 @@ vim.api.nvim_create_user_command("WeaveTraceToggle", function()
   require("weave.trace").toggle(vim.api.nvim_get_current_buf())
 end, { desc = "Toggle the definition-value ghost text" })
 
+vim.api.nvim_create_user_command("WeaveCalls", function()
+  require("weave.calls").show(vim.api.nvim_get_current_buf())
+end, { desc = "Show what the enclosing function's names held, call by call" })
+
 vim.api.nvim_create_user_command("WeaveInput", function()
   local file = vim.api.nvim_buf_get_name(0)
   local input = require("weave.trace").input_for(vim.fs.dirname(file))
@@ -38,13 +42,15 @@ vim.api.nvim_create_user_command("AocInput", function()
 end, { desc = "Fetch the puzzle input beside this program" })
 
 vim.api.nvim_create_user_command("AocProblem", function(a)
-  require("weave.aoc").problem(nil, a.bang)
+  require("weave.aoc").problem(nil, { force = a.bang })
 end, { bang = true, desc = "Show the day's problem in a split (! refetches)" })
 
+-- A right answer refetches the problem on its own, so part two is there the
+-- moment part one lands, and a window already showing it scrolls to it.
 vim.api.nvim_create_user_command("AocSubmit", function(a)
   require("weave.aoc").submit(nil, a.bang)
 end, { bang = true, desc = "Submit the answer for the part the cursor is in (! ignores the cooldown)" })
 
 vim.api.nvim_create_user_command("AocTime", function()
   require("weave.aoc").time()
-end, { desc = "How long until another answer may be sent" })
+end, { desc = "What has been answered, and how long until another may be sent" })

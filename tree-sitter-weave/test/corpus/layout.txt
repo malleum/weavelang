@@ -196,3 +196,74 @@ describe (first [1])
         (identifier)
         (thread
           (integer))))))
+
+================================================================================
+A ward with its arms bracketed on the same line
+================================================================================
+
+name c is ward c (Light : 1) (Shadow : 0)
+
+name Light
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    parameters: (identifier)
+    body: (ward
+      subject: (identifier)
+      (ward_arm_inline
+        pattern: (constructor)
+        body: (integer))
+      (ward_arm_inline
+        pattern: (constructor)
+        body: (integer))))
+  (output
+    (application
+      function: (identifier)
+      arguments: (constructor))))
+
+================================================================================
+An inline ward is an expression, so it can be an argument or a stage
+================================================================================
+
+n is [Light, Shadow] | bend (c : ward c (Light : 1) (Shadow : 0)) | sum
+
+add 1 (ward Light (Light : 2) (_ : 3))
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    body: (pipeline
+      (pipeline
+        (thread
+          (constructor)
+          (constructor))
+        (application
+          function: (identifier)
+          arguments: (lambda
+            parameters: (identifier)
+            body: (ward
+              subject: (identifier)
+              (ward_arm_inline
+                pattern: (constructor)
+                body: (integer))
+              (ward_arm_inline
+                pattern: (constructor)
+                body: (integer))))))
+      (identifier)))
+  (output
+    (application
+      function: (identifier)
+      arguments: (integer)
+      arguments: (ward
+        subject: (constructor)
+        (ward_arm_inline
+          pattern: (constructor)
+          body: (integer))
+        (ward_arm_inline
+          pattern: (wildcard)
+          body: (integer))))))

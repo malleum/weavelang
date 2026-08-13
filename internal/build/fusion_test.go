@@ -58,6 +58,15 @@ func runWith(t *testing.T, name, src, input string, o build.Options) string {
 const mapLoop = "fill 0 w is w\nfill n w is fill (sub n 1) (put w n (mul n 2))\n"
 
 func TestOptimisationsPreserveMeaning(t *testing.T) {
+	// Every program here is compiled four times over and run four times over,
+	// which is half an hour on a slow machine. That is the right price for the
+	// check that protects every optimisation in the compiler, and the wrong
+	// price for the test you run between two edits — so `-short` leaves it out
+	// and continuous integration runs it on every push. See .github/workflows.
+	if testing.Short() {
+		t.Skip("the whole corpus compiled four ways; run without -short")
+	}
+
 	programs := []struct {
 		name, src, in string
 	}{
@@ -112,6 +121,701 @@ func TestOptimisationsPreserveMeaning(t *testing.T) {
 		{"items collected whole", "w is web [(2, 20) (1, 10)]\nitems w | sift ((k, _) : gt 0 k)", ""},
 		{"items feeding the map it came from", "w is web [(1, 1) (2, 2)]\nitems w | braid (acc (k, v) : put acc k (mul v 10)) w | items", ""},
 		{"members of a Circle is not a pair", "circle [3 1 2] | members | bend (x : mul x 2) | sum", ""},
+
+		// The reading rule was widened from a whitelist of about seventeen
+		// verbs to "anything that cannot keep the collection". Every one of
+		// these now writes through where it used to copy, so every one has to
+		// agree with the copying version — a read that secretly kept a
+		// reference would show up here and nowhere else.
+		{"reading its keys mid-loop", "fill 0 w acc is (len w, acc)\nfill n w acc is fill (sub n 1) (put w n n) (add acc (len (keys w)))\nfill 20 (web []) 0", ""},
+		{"reading its vals mid-loop", "fill 0 w acc is (len w, acc)\nfill n w acc is fill (sub n 1) (put w n n) (add acc (sum (vals w)))\nfill 20 (web []) 0", ""},
+		{"reading its items mid-loop", "fill 0 w acc is (len w, acc)\nfill n w acc is fill (sub n 1) (put w n n) (add acc (len (items w)))\nfill 20 (web []) 0", ""},
+		{"reading a Circle's members mid-loop", "seen 0 c acc is (len c, acc)\nseen n c acc is seen (sub n 1) (insert c n) (add acc (len (members c)))\nseen 20 (circle []) 0", ""},
+		{"sorting its keys mid-loop", "fill 0 w acc is (len w, acc)\nfill n w acc is fill (sub n 1) (put w n n) (add acc (sum (sort (keys w))))\nfill 20 (web []) 0", ""},
+		{"a grid read through its knots mid-loop", "g is [\"abc\" \"def\"] | bend fires | weft ' '\nstep 0 p acc is (len (cells p), acc)\nstep n p acc is step (sub n 1) (set p (knot 0 0) '#') (add acc (len (knots p)))\nstep 10 g 0", ""},
+		{"the program's own helper reading it", "size4 m is add 1 (len m)\nfill 0 w is len w\nfill n w is fill (sub n 1) (put w n (size4 w))\nfill 20 (web [])", ""},
+		{"a Thread read every way mid-loop", "step 0 t acc is (sum t, acc)\nstep n t acc is step (sub n 1) (mend 0 n t) (add acc (add (len t) (sum t)))\nstep 20 (span 1 8) 0", ""},
+
+		// The same reads, taken before the tail call, where the widened rule
+		// does let the update write through. These are the ones that changed.
+		{
+			"keys read before the update",
+			"fill 0 w acc is acc\n" +
+				"fill n w acc is\n  weave k is len (keys w)\n  fill (sub n 1) (put w n n) (add acc k)\n" +
+				"fill 20 (web []) 0", "",
+		},
+		{
+			"vals summed before the update",
+			"fill 0 w acc is acc\n" +
+				"fill n w acc is\n  weave s is sum (vals w)\n  fill (sub n 1) (put w n n) (add acc s)\n" +
+				"fill 20 (web []) 0", "",
+		},
+		{
+			"a Circle's members before the update",
+			"seen 0 c acc is acc\n" +
+				"seen n c acc is\n  weave m is len (members c)\n  seen (sub n 1) (insert c n) (add acc m)\n" +
+				"seen 20 (circle []) 0", "",
+		},
+		{
+			"a grid's knots before the update",
+			"g is [\"abc\" \"def\"] | bend fires | weft ' '\n" +
+				"step 0 p acc is acc\n" +
+				"step n p acc is\n  weave k is len (knots p)\n  step (sub n 1) (set p (knot 0 0) '#') (add acc k)\n" +
+				"step 10 g 0", "",
+		},
+		{
+			"a Thread read every way before the update",
+			"step 0 t acc is acc\n" +
+				"step n t acc is\n  weave r is add (len t) (sum t)\n  step (sub n 1) (mend 0 n t) (add acc r)\n" +
+				"step 20 (span 1 8) 0", "",
+		},
+		{
+			"the program's own helper reading it",
+			"size4 m is add 1 (len m)\n" +
+				"fill 0 w is len w\nfill n w is fill (sub n 1) (put w n (size4 w))\n" +
+				"fill 20 (web [])", "",
+		},
+
+		// A collection carried as one half of a Twine accumulator, which is how
+		// a walk carries its position. Every one of these writes through now,
+		// so every one has to agree with the copying build — and the seed has
+		// to survive, which is what the ones reading it afterwards check.
+		{
+			"a Thread and an index through gentle",
+			"fst p is\n  ward p\n    (a, _) : a\n" +
+				"[1 2 3] | gentle ((v, i) n : Woven (mend i n v, add i 1)) ([9 9 9], 0) | rescue ([], 0) | fst | air", "",
+		},
+		{
+			"a Thread and an index through braid",
+			"fst p is\n  ward p\n    (a, _) : a\n" +
+				"[1 2 3] | braid ((v, i) n : (mend i n v, add i 1)) ([9 9 9], 0) | fst | air", "",
+		},
+		{
+			"the collection is the second half",
+			"snd p is\n  ward p\n    (_, b) : b\n" +
+				"[1 2 3] | braid ((i, v) n : (add i 1, mend i n v)) (0, [9 9 9]) | snd | air", "",
+		},
+		{
+			"a Web and a counter",
+			"fst p is\n  ward p\n    (a, _) : a\n" +
+				"[1 2 3] | braid ((w, i) n : (put w n i, add i 1)) (web [], 0) | fst | items", "",
+		},
+		{
+			"the seed survives the fold",
+			"fst p is\n  ward p\n    (a, _) : a\n" +
+				"seed is [9 9 9]\n" +
+				"done is [1 2 3] | braid ((v, i) n : (mend i n v, add i 1)) (seed, 0) | fst\n" +
+				"join \",\" [air done, air seed]", "",
+		},
+		{
+			"a walk that stops, carrying its position",
+			"digits is [3 1 2 0 4]\n" +
+				"step (v, i) c is\n" +
+				"  weave n is nth i v\n" +
+				"  pick (holds n) (Woven (mend i (inc (n | otherwise 0)) v, add (n | otherwise 0) i)) (Gentled c)\n" +
+				"gentle step (digits, 0) (flow inc 0) | snag 0", "",
+		},
+
+		// A fold step lifted out to a name is the same lambda under another
+		// name, and is inlined as one. These check the shapes that are and are
+		// not read back that way.
+		{
+			"a named step",
+			"step (v, i) n is (mend i n v, add i 1)\n" +
+				"fst p is\n  ward p\n    (a, _) : a\n" +
+				"[1 2 3] | braid step ([9 9 9], 0) | fst | air", "",
+		},
+		{
+			"a named step of two clauses stays a call",
+			"step v 0 is v\nstep v n is mend 0 n v\n[1 2 3] | braid step [9 9 9] | air", "",
+		},
+		{
+			"a named step that calls itself stays a call",
+			"step v n is pick (gt 1 n) (step v (sub n 1)) (mend 0 n v)\n[1 2 3] | braid step [9 9 9] | air", "",
+		},
+		{
+			"a remembered step stays a call",
+			"remember step v n is mend 0 n v\n[1 2 3] | braid step [9 9 9] | air", "",
+		},
+		{
+			"a named stage function",
+			"twice2 n is mul n 2\nspan 1 10 | bend twice2 | sift (gt 5) | sum", "",
+		},
+		{
+			"a named predicate",
+			"big n is gt 5 n\nspan 1 10 | count big", "",
+		},
+
+		// A lambda handed straight to a verb cannot outlive the call, so a
+		// mention of the collection inside it is a read like any other.
+		{
+			"read through a lambda a verb is holding",
+			"w is span 1 20 | braid (a k : put a k (len ([1] | bend (x : len a)))) (web [])\nlen w", "",
+		},
+		{
+			"read through a lambda inside a stage",
+			"walk xs i acc is\n" +
+				"  ward nth i xs\n" +
+				"    Stilled : acc\n" +
+				"    Held d :\n" +
+				"      weave used is span 0 i | bend (j : nth j xs | otherwise 0) | sum\n" +
+				"      walk (mend i (add d used) xs) (add i 1) (add acc used)\n" +
+				"walk [1 2 3 4 5] 0 0", "",
+		},
+
+		// Chained updates: each link hands its result to the next.
+		{
+			"two updates in one expression",
+			"fill 0 w is len w\nfill n w is fill (sub n 1) (put (put w n n) (neg n) n)\nfill 20 (web [])", "",
+		},
+		{
+			"three deep",
+			"step 0 t is sum t\nstep n t is step (sub n 1) (mend 0 n (mend 1 n (mend 2 n t)))\nstep 20 [9 9 9]", "",
+		},
+
+		// The hazard the widening uncovered: a sibling argument of the updating
+		// tail call is evaluated after the write, so it must not read.
+		{"a sibling argument reads it after the update", "fill 0 w acc is acc\nfill n w acc is fill (sub n 1) (put w n n) (add acc (len w))\nfill 20 (web []) 0", ""},
+		{"a sibling takes its keys after the update", "fill 0 w acc is acc\nfill n w acc is fill (sub n 1) (put w n n) (add acc (len (keys w)))\nfill 20 (web []) 0", ""},
+
+		// `gentle` joined `braid`: it threads its accumulator identically and
+		// had simply been left out.
+		{"gentle over a Thread", "[1 2 3 4] | gentle (v n : Woven (mend 0 n v)) [9 9 9] | rescue [] | air", ""},
+
+		// A fused `gentle` carries its accumulator in pieces and its Weaving in
+		// a flag, so that neither is built on a turn nobody looks at them. Every
+		// shape that decides whether it can is here, because the ones it cannot
+		// take apart have to keep working exactly as they did.
+		// A fused fold whose turn allocates and answers with a number hands its
+		// storage back at the end of the turn. That is the one thing that helps
+		// a backtracking search, which uses the collection it was handed once
+		// per *option* and so can never be single-threaded — and it is also the
+		// most dangerous thing in the compiler, because a turn that hands back
+		// storage something still points at is silent corruption rather than a
+		// crash. Every shape here is run with the release and without it.
+		{
+			"a fold whose turn allocates a Thread it throws away",
+			"span 1 200 | braid (b v : max b (span 1 v | bend (x : mul x x) | sum)) 0", "",
+		},
+		{
+			"a fold whose turn allocates text",
+			"span 1 120 | braid (b v : max b (len (air v | repeat 3))) 0", "",
+		},
+		{
+			"a fold whose turn builds a Web and a Circle",
+			"span 1 80 | braid (b v : add b (span 1 v | braid (w n : put w n n) (web []) | keys | len)) 0", "",
+		},
+		{
+			"a fold nested inside a fold, so a region sits inside a region",
+			"span 1 40 | braid (b v : add b (span 1 v | braid (c n : add c (span 1 n | sum)) 0)) 0", "",
+		},
+		{
+			"a fold over a search that copies the collection it is handed",
+			"walk xs i best is\n" +
+				"  ward i\n" +
+				"    4 : min best (xs | sum)\n" +
+				"    _ : span 0 2 | braid (b v : walk (mend i v xs) (add i 1) b) best\n" +
+				"walk [9 9 9 9] 0 999", "",
+		},
+		{
+			"a fold whose accumulator is text, which is not a shape it may release",
+			"span 1 30 | braid (b v : weld b (air v)) \"\" | len", "",
+		},
+		{
+			"a fold whose accumulator is a Thread, likewise",
+			"span 1 30 | braid (b v : mend 0 v b) [0 0] | sum", "",
+		},
+		{
+			"a fold reaching a remembered definition, likewise",
+			"remember sq n is mul n n\n\nspan 1 60 | braid (b v : add b (sq v)) 0", "",
+		},
+		{
+			"a fold reaching a top-level value, which is forced before the region",
+			"nums is span 1 50\n\nspan 1 40 | braid (b v : add b (nth v nums else 0)) 0", "",
+		},
+		{
+			"a gentle whose halves swap",
+			"gentle ((a, b) n : pick (lt 8 a) (Woven (b, add a n)) (Gentled (add a b))) (0, 100) (span 1 100) failing 0", "",
+		},
+		{
+			"a gentle whose second half reads the first",
+			"gentle ((a, b) n : pick (lt 6 a) (Woven (add a n, add a b)) (Gentled b)) (0, 0) (span 1 100) failing 0", "",
+		},
+		{
+			"a gentle carrying three",
+			"gentle ((x, y, z) n : pick (lt 6 x) (Woven (inc x, add y n, z)) (Gentled (add y z))) (0, 0, 9) (span 1 50) failing 0", "",
+		},
+		{
+			"a gentle whose accumulator is not a Twine",
+			"gentle (s n : pick (lt 5 s) (Woven (add s 1)) (Gentled n)) 0 (flow inc 1) failing 0", "",
+		},
+		{
+			"a gentle that never gentles",
+			"gentle (s n : Woven (add s n)) 0 (span 1 10) failing 0", "",
+		},
+		{
+			"a gentle ending in a ward, which is not a shape it can split",
+			"gentle (s n : ward (gt 4 s) (Light : Woven (add s n)) (Shadow : Gentled s)) 0 (span 1 100) failing 0", "",
+		},
+		{
+			"a gentle carrying a Circle it updates in place",
+			"gentle ((s, k) n : pick (lt 20 k) (Woven (insert s n, inc k)) (Gentled (len s))) (circle [], 0) (span 1 100) failing 0", "",
+		},
+		{
+			"a gentle carrying a Web and text",
+			"gentle ((w, t, k) n : pick (lt 5 k) (Woven (put w n n, weld t \"x\", inc k)) (Gentled t)) (web [], \"\", 0) (span 1 50) failing \"?\"", "",
+		},
+		{"gentle over a Web", "[1 2 3] | gentle (w n : Woven (put w n n)) (web []) | rescue (web []) | items", ""},
+		{"gentle that stops early", "[1 2 3 4 5] | gentle (w n : pick (gt 3 n) (Gentled n) (Woven (put w n n))) (web []) | snag 0", ""},
+		{"gentle handing the accumulator out as the answer", "[1 2 3 4] | gentle (v n : pick (gt 2 n) (Gentled v) (Woven (mend 0 n v))) [9 9 9] | snag [] | air", ""},
+		{"gentle whose seed is read afterwards", "t is [9 9 9]\njoin \",\" [air ([1 2] | gentle (v n : Woven (mend 0 n v)) t | rescue [] | sum), air (sum t)]", ""},
+
+		// A loop that hands its collection straight back on the turns it does
+		// not update now keeps the in-place path. Every one of these has to
+		// agree with the copying version, since that is the whole risk: an
+		// update written through where a second reference survived would show
+		// up here and nowhere else.
+		{
+			"a map that skips what it already knows",
+			"fill [] w is w\nfill [k ..rest] w is pick (known w k) (fill rest w) (fill rest (put w k (mul k 2)))\n" +
+				"fill [1 2 1 3 2 4] (web []) | items", "",
+		},
+		{
+			"a set that skips what it has seen",
+			"seen [] c is c\nseen [x ..rest] c is pick (member c x) (seen rest c) (seen rest (insert c x))\n" +
+				"seen [3 1 3 2 1] (circle []) | members | sort", "",
+		},
+		{
+			"a Link that skips a pair already joined",
+			"walk [] l is l\nwalk [(a, b) ..rest] l is pick (bound l a b) (walk rest l) (walk rest (bind l a b))\n" +
+				"walk [(0, 1) (2, 3) (1, 2) (0, 3) (4, 5)] (link (span 0 5)) | clumped | bend len | sort", "",
+		},
+		{
+			"a grid that skips the cells already right",
+			"g is [\"ab\" \"cd\"] | bend fires | weft ' '\n" +
+				"wipe [] p is p\nwipe [k ..rest] p is pick (eq (Held '.') (cell p k)) (wipe rest p) (wipe rest (set p k '.'))\n" +
+				"wipe (knots g) g | cells | air", "",
+		},
+		{
+			"a Thread that skips the positions already right",
+			"zeroes [] xs is xs\nzeroes [i ..rest] xs is pick (eq (Held 0) (nth i xs)) (zeroes rest xs) (zeroes rest (mend i 0 xs))\n" +
+				"zeroes [0 1 2 0 1] [5 0 7] | air", "",
+		},
+		{
+			// The old value must still be there for whoever else held it, so
+			// this reads the seed after the loop has run on it.
+			"the collection the loop started from is unchanged",
+			"w is web [(1, 1)]\nfill 0 m is m\nfill n m is fill (sub n 1) (put m n n)\n" +
+				"join \",\" [air (len (fill 5 w)), air (len w)]", "",
+		},
+		{
+			"a Link the loop started from is unchanged",
+			"l is link [1 2 3]\njoin \",\" [air (len (clumped (bind l 1 2))), air (len (clumped l))]", "",
+		},
+
+		// A collection a loop owns is handed back to the caller, who may keep
+		// it. These read the older one *after* the later loop has written, and
+		// that ordering is the whole point: read it before and a Thread that
+		// escaped still writable looks fine.
+		{
+			"a Thread out of one fold is the seed of the next",
+			"fst p is\n  ward p\n    (a, _) : a\n" +
+				"a is [1 2 3] | braid ((v, i) n : (mend i n v, add i 1)) ([9 9 9], 0) | fst\n" +
+				"b is [7 7 7] | braid ((v, i) n : (mend i n v, add i 1)) (a, 0) | fst\n" +
+				"join \"  \" [air b, air a]", "",
+		},
+		{
+			"a Thread out of a helper is the seed of the next",
+			"fill t ks is ks | braid (v i : mend i 0 v) t\n" +
+				"a is fill [1 2 3] [0 1]\nb is fill a [2]\n" +
+				"join \"  \" [air b, air a]", "",
+		},
+		{
+			"a search that backtracks over a board",
+			"fill board ks is ks | braid (b i : mend i 1 b) board\n" +
+				"optionsAt pos is [[pos] [pos, add pos 1]]\n" +
+				"free board ks is ks | all (i : eq (Held 0) (nth i board))\n" +
+				"search board pos depth is\n" +
+				"  pick (gt 2 depth) Shadow\n" +
+				"    (pick (gte 4 pos) (eq 4 (board | sum))\n" +
+				"      (optionsAt pos | any\n" +
+				"        (ks : pick (free board ks)\n" +
+				"          (search (fill board ks) (add pos 2) (add depth 1)) Shadow)))\n" +
+				"join \" \" ([search (copies 6 0) 0 0, search (copies 6 0) 1 0] | bend air)", "",
+		},
+
+		// Consumed parameters: a helper handed the collection outright, so the
+		// ownership crosses the call. The risk is the same one the disown
+		// guards, one call deeper — a result that leaves still writable while
+		// the caller kept the value it came from — so every one of these reads
+		// the older collection after the later call has run.
+		{
+			"a helper that updates and hands back",
+			"fill t ks is ks | braid (v i : mend i 0 v) t\n" +
+				"step 0 t acc is add acc (t | sum)\n" +
+				"step n t acc is step (sub n 1) (fill t [0 1 2]) (add acc 1)\n" +
+				"step 4 [9 9 9] 0", "",
+		},
+		{
+			"the collection a consuming helper was given survives",
+			"fill t ks is ks | braid (v i : mend i 0 v) t\n" +
+				"a is fill [1 2 3] [0 1]\nb is fill a [2]\n" +
+				"join \"  \" [air b, air a]", "",
+		},
+		{
+			"a consuming helper called from a fold",
+			"fill w ks is ks | braid (m k : put m k 1) w\n" +
+				"span 1 5 | braid (w n : fill w [n, neg n]) (web []) | len", "",
+		},
+		{
+			"a consuming helper that recurses",
+			"wipe [] p is p\nwipe [k ..rest] p is wipe rest (set p k '.')\n" +
+				"g is [\"ab\" \"cd\"] | bend fires | weft ' '\n" +
+				"h is wipe (knots g) g\njoin \"  \" [cells h | air, cells g | air]", "",
+		},
+		{
+			"a consuming helper of two collection parameters",
+			"pour c t is t | braid (a n : insert a n) c\n" +
+				"seed is circle [9]\none is pour seed [1 2]\ntwo is pour one [3]\n" +
+				"join \",\" [air (len (members two)), air (len (members one)), air (len (members seed))]", "",
+		},
+		{
+			"a chain of two consuming helpers",
+			"one t is mend 0 1 t\ntwo t is mend 1 2 (one t)\n" +
+				"step 0 t is t\nstep n t is step (sub n 1) (two t)\n" +
+				"seed is [9 9 9]\njoin \"  \" [air (step 3 seed), air seed]", "",
+		},
+		{
+			"a consuming helper whose result is read twice",
+			"grow l ps is ps | braid (m (a, b) : bind m a b) l\n" +
+				"base is link (span 0 5)\njoined is grow base [(0, 1) (2, 3)]\n" +
+				"more is grow joined [(1, 2)]\n" +
+				"join \",\" [air (len (clumped more)), air (len (clumped joined)), air (len (clumped base))]", "",
+		},
+
+		// A collection the loop owns may leave inside a constructor, which is
+		// how a search answers: `Held xs` for the vector it solved for. That is
+		// the same escape a bare mention is, so the same disown has to happen —
+		// and these read the older one after the later loop has written, which
+		// is the only ordering that shows a missing one.
+		{
+			"a Thread handed out inside a Held",
+			"setA 0 xs is Held xs\nsetA n xs is setA (sub n 1) (mend n (mul n 10) xs)\n" +
+				"setB 0 xs is Held xs\nsetB n xs is setB (sub n 1) (mend n n xs)\n" +
+				"a is setA 2 [9 9 9] else []\nb is setB 2 a else []\n" +
+				"join \"  \" [air b, air a]", "",
+		},
+		{
+			"a Web handed out inside a declared constructor",
+			"Answer is Found (Web Earth Earth) | Missing\n\n" +
+				"fill 0 w is Found w\nfill n w is fill (sub n 1) (put w n n)\n" +
+				"seen a is\n  ward a\n    Found w : len (keys w)\n    Missing : 0\n" +
+				"one is fill 4 (web [])\ntwo is\n  ward one\n    Found w : fill 9 w\n    Missing : Missing\n" +
+				"join \",\" [air (seen two), air (seen one)]", "",
+		},
+
+		// A read of the collection through a lambda a verb is holding, inside a
+		// call whose own result is a Thread. The lambda cannot outlive the
+		// call and cannot hand the collection out, so this is a read — the
+		// shape day 10's back-substitution is written in.
+		{
+			"a read through a lambda inside a chain that builds a Thread",
+			"back [] wide xs is xs\n" +
+				"back [(c, pr) ..rest] wide xs is\n" +
+				"  weave used is\n" +
+				"    span (add c 1) (sub wide 1)\n" +
+				"      as (j : mul (nth j pr else 0) (nth j xs else 0))\n" +
+				"      | sum\n" +
+				"  back rest wide (mend c used xs)\n" +
+				"back [(0, [1 2]) (1, [3 4])] 2 [9 9] | air", "",
+		},
+		{
+			"the Thread that chain started from is unchanged",
+			"step [] xs is xs\n" +
+				"step [i ..rest] xs is\n" +
+				"  weave n is span 0 2 | bend (j : nth j xs | otherwise 0) | sum\n" +
+				"  step rest (mend i n xs)\n" +
+				"seed is [1 2 3]\n" +
+				"join \"  \" [air (step [0 1 2] seed), air seed]", "",
+		},
+
+		// A Held of something already on the heap keeps the value where it
+		// stands rather than boxing it. Everything that reads a Hold has to
+		// agree, including the one shape that still boxes: a Held of a Held.
+		{"a Held Thread read back", "nth 0 [[1 2] [3 4]] | otherwise [] | air", ""},
+		{"a Held Thread compared", "eq (nth 0 [[1 2]]) (nth 0 [[1 2]])", ""},
+		{"a Held Thread ordered", "sort [nth 1 [[9] [1]], nth 0 [[9] [1]]] | bend (h : h | otherwise [] | air)", ""},
+		{"a Held Thread shown", "air (nth 0 [[1 2] [3]])", ""},
+		{"a Held Thread as a Web key", "w is web [(nth 0 [[1 2]], 7)]\nget w (nth 0 [[1 2]]) | otherwise 0", ""},
+		{"a Held Web", "nth 0 [(web [(1, 2)])] | otherwise (web []) | items", ""},
+		{"a Held text", "nth 0 [\"ab\" \"cd\"] | otherwise \"\"", ""},
+		{"a Held of a Held", "air (nth 0 [(nth 0 [[1 2]])])", ""},
+		{"a Stilled beside a Held Thread", "join \",\" [air (nth 9 [[1 2]]), air (nth 0 [[1 2]])]", ""},
+		{"a remembered function keyed on a Held Thread", "remember size h is len (h | otherwise [])\nadd (size (nth 0 [[1 2 3]])) (size (nth 0 [[1 2 3]]))", ""},
+
+		// The empty Thread is one object for the whole program, so everything
+		// that could write to it or free it has to leave it alone.
+		{"the empty Thread welded", "none is []\njoin \",\" [air (weld none [1 2]), air (weld [1 2] none), air none]", ""},
+		{"the empty Thread mended", "join \",\" [air (mend 0 1 []), air ([] | len)]", ""},
+		{"the empty Thread from two places", "none is []\nand (eq none (span 1 0)) (eq (len none) (len (span 1 0)))", ""},
+		{"an empty default read many times", "xs is [[1 2] [3]]\nspan 0 20 | bend (i : nth i xs | otherwise [] | len) | sum", ""},
+		{"a function releasing what it built beside an empty default", "xs is [[1 2] [3]]\n" +
+			"look i is\n  weave got is nth i xs | otherwise []\n  len got\n" +
+			"span 0 20 | bend look | sum", ""},
+
+		// Sorting is Weave's own now — a stable merge sort, and a radix sort
+		// past 256 elements when every key is an Earth. Stability is the part
+		// that has to be checked at size: the radix path only starts there, and
+		// a program that sorts and then walks reads the tie order.
+		{"a stable sort by key, past the radix threshold",
+			"span 0 999 | bend (i : (mod i 7, i)) | sortby (former) | bend (latter) | take 21 | air", ""},
+		{"a stable sort by key, under it",
+			"span 0 40 | bend (i : (mod i 7, i)) | sortby (former) | bend (latter) | air", ""},
+		{"ties keep the order they were given",
+			"[(2, 'a') (1, 'b') (2, 'c') (1, 'd')] | sortby (former) | bend (latter) | air", ""},
+		{"negative keys", "[5, neg 3, 0, neg 100, 42, neg 3] | sort | air", ""},
+		{"negative keys past the threshold",
+			"span 0 600 | bend (i : sub (mul (mod i 13) 1000000) 6000000) | sort | take 20 | air", ""},
+		{"one key for everything", "span 0 400 | bend (i : (7, i)) | sortby (former) | bend (latter) | take 8 | air", ""},
+		{"keys that are not Earths", "[\"pear\" \"fig\" \"apple\"] | sortby len | air", ""},
+		{"sorting Twines", "[(2, 1) (1, 9) (1, 2)] | sort | air", ""},
+		{"sorting nothing", "none is []\njoin \",\" [air (sort none), air (sortby (x : x) none)]", ""},
+		{"sorting one", "join \",\" [air (sort [3]), air (sortby (x : x) [3])]", ""},
+		{"top and bot still read off a sort", "span 1 500 | bend (i : mod (mul i 37) 500) | top 4 | air", ""},
+
+		// A binding may take its value apart, the way a parameter does. The
+		// top-level form expands into one hidden definition holding the value
+		// and a projection per name, so these check that the value is worked
+		// out once and that the names come out of it in the right places.
+		{"a local binding takes a Twine apart",
+			"f p is\n  weave (a, b) is p\n  add a b\n\nf (1, 2)", ""},
+		{"a local binding, nested",
+			"f p is\n  weave ((a, b), c) is p\n  join \",\" [air a, air b, air c]\n\nf ((1, 2), 3)", ""},
+		{"a local binding feeds later ones",
+			"f p is\n  weave (a, b) is p\n  weave s is add a b\n  mul s 2\n\nf (3, 4)", ""},
+		{"a local binding of a knot",
+			"f k is\n  weave (knot r c) is k\n  add r c\n\nf (knot 3 4)", ""},
+		{"a top-level definition takes a Twine apart",
+			"(width, height) is (12, 5)\nmul width height", ""},
+		{"a top-level definition used before it is written",
+			"total is add w h\n(w, h) is (3, 4)\ntotal", ""},
+		{"the value behind one is worked out once",
+			"pair is span 1 4 | braid ((s, p) x : (add s x, mul p x)) (0, 1)\n" +
+				"(s, p) is pair\njoin \",\" [air s, air p]", ""},
+		{"two of them do not collide",
+			"(a, b) is (1, 2)\n(c, d) is (3, 4)\nadd (add a b) (add c d)", ""},
+		{"one inside a loop that owns its collection",
+			"step 0 xs p is add (sum xs) (ward p ((a, _) : a))\n" +
+				"step n xs p is\n" +
+				"  weave (lo, hi) is p\n" +
+				"  step (sub n 1) (mend 0 n xs) (add lo 1, hi)\n" +
+				"step 5 [9 9 9] (0, 0)", ""},
+
+		// The verbs that answer from one element. Fused they end the loop, so
+		// each one has to agree with the runtime verb it replaces — including
+		// about a position that is not there, which is where an off-by-one in
+		// the count would show.
+		{"idx over a generated producer", "span 1 40 | idx 7", ""},
+		{"idx after a stage", "span 1 40 | bend (mul this 3) | idx 12", ""},
+		{"idx finds nothing", "span 1 40 | bend (mul this 3) | idx 13", ""},
+		{"idx counts past the stage", "span 1 40 | sift even | idx 12", ""},
+		{"seekidx over a generated producer", "span 1 40 | seekidx (gt 30)", ""},
+		{"seekidx finds nothing", "span 1 40 | seekidx (gt 99)", ""},
+		{"seekidx counts past the stage", "span 1 40 | sift even | seekidx (gt 10)", ""},
+		{"has over a generated producer", "span 1 40 | has 7", ""},
+		{"has finds nothing", "span 1 40 | bend (mul this 3) | has 13", ""},
+		{"none over a generated producer", "span 1 40 | none (gt 99)", ""},
+		{"none finds one", "span 1 40 | none (gt 30)", ""},
+		{"nth over a generated producer", "span 1 40 | nth 7", ""},
+		{"nth after a stage", "span 1 40 | bend (mul this 3) | nth 7", ""},
+		{"nth past the end", "span 1 4 | bend (mul this 3) | nth 9", ""},
+		{"nth of a negative position", "span 1 4 | bend (mul this 3) | nth (neg 1)", ""},
+		{"nth counts past the stage", "span 1 40 | sift even | nth 3", ""},
+		{"second after a stage", "span 1 40 | bend (mul this 3) | second", ""},
+		{"second of one element", "span 1 1 | bend (mul this 3) | second", ""},
+		{"second of nothing", "span 1 0 | bend (mul this 3) | second", ""},
+		// `nth` reads text as well as a Thread, and the loop only walks one.
+		{"nth on text", "\"hello\" | nth 1", ""},
+		{"nth on text past the end", "\"hi\" | nth 9", ""},
+
+		// `drop` and `dropwhile` are stages now, the mirror of `take` and
+		// `takewhile`. Being stages is what lets an endless producer survive
+		// one: `cycle xs | drop 7 | first` used to be refused, because the
+		// chain broke at the `drop` and the `cycle` had to be built.
+		{"an endless chain dropped then read", "cycle [10 20 30] | drop 7 | first | otherwise 0", ""},
+		{"a flow dropped then taken", "flow inc 1 | drop 5 | take 3 | air", ""},
+		{"an endless chain skipped then read", "cycle [10 20 30] | dropwhile (eq 10) | first | otherwise 0", ""},
+		{"drop then sum", "span 1 12 | drop 4 | sum", ""},
+		{"drop none", "span 1 12 | drop 0 | sum", ""},
+		{"drop past the end", "span 1 12 | drop 99 | sum", ""},
+		{"drop a negative count", "span 1 12 | drop (neg 2) | sum", ""},
+		{"drop then map then take", "span 1 12 | drop 3 | bend (mul this 2) | take 4 | air", ""},
+		{"map then drop", "span 1 12 | bend (mul this 2) | drop 8 | air", ""},
+		{"take then drop", "span 1 12 | take 6 | drop 2 | air", ""},
+		{"drop twice", "span 1 12 | drop 3 | drop 3 | air", ""},
+		{"dropwhile keeping everything", "span 1 12 | dropwhile (gt 99) | air", ""},
+		{"dropwhile keeping nothing", "span 1 12 | dropwhile (gt 0) | air", ""},
+		{"dropwhile lets a later failure through", "[1 9 1 9] | dropwhile (gt 5) | air", ""},
+		{"dropwhile over pairs", "enum [10 20 30] | dropwhile ((i, _) : gt 1 i) | bend (latter) | air", ""},
+		{"drop inside a fold", "span 1 20 | drop 5 | braid add 0", ""},
+		{"drop is still a window on text", "\"abcdef\" | drop 2", ""},
+
+		// `weld` never names the element type, so it carries `Ply` alongside
+		// `take`, `drop`, `sever` and `rev`: text welds as readily as a Thread.
+		{"welding text", `join "|" [weld "world" "hello ", weld "" "x", weld "y" ""]`, ""},
+		{"welding windows of text", `weld (take 2 "abcdef") (drop 4 "abcdef")`, ""},
+		{"welding Threads still works", "weld [3 4] [1 2] | air", ""},
+		{"welding runes", `"abc" | fires | weld ['d'] | air`, ""},
+
+		// `turn` shifts a Thread round and `wrap` indexes one that way. Both
+		// take the count however far past the length it is, and negative, so
+		// the edges are where they earn their keep.
+		{"turn by one", "turn 1 [1 2 3 4 5] | air", ""},
+		{"turn the other way", "turn (neg 1) [1 2 3 4 5] | air", ""},
+		{"turn by none", "turn 0 [1 2 3 4 5] | air", ""},
+		{"turn by the whole length", "turn 5 [1 2 3 4 5] | air", ""},
+		{"turn further than the length", "join \",\" [air (turn 7 [1 2 3 4 5]), air (turn (neg 7) [1 2 3 4 5])]", ""},
+		{"turn nothing", "turn 3 (take 0 [1 2 3]) | air", ""},
+		{"turn text", "join \",\" [turn 2 \"abcdef\", turn (neg 1) \"abcdef\", turn 3 \"\"]", ""},
+		{"turn text by rune", "turn 1 \"héllo\"", ""},
+		{"turn is not a copy of its source", "xs is [1 2 3]\njoin \",\" [air (turn 1 xs), air xs]", ""},
+		{"wrap inside", "wrap 2 [1 2 3 4 5] | otherwise 0", ""},
+		{"wrap past the end", "wrap 7 [1 2 3 4 5] | otherwise 0", ""},
+		{"wrap from the end", "join \",\" [air (wrap (neg 1) [1 2 3 4 5] | otherwise 0), air (wrap (neg 6) [1 2 3 4 5] | otherwise 0)]", ""},
+		{"wrap nothing", "wrap 0 (take 0 [1 2 3]) | otherwise 99", ""},
+		{"wrap over a turn", "span 0 6 | bend (i : wrap i (turn 2 [1 2 3]) | otherwise 0) | air", ""},
+
+		// `repeat` lays a Thread or some text end to end, so `copies n xs | flat`
+		// has one verb again — and it carries Ply, so both work.
+		{"repeat a Thread", "repeat 3 [1 2] | air", ""},
+		{"repeat text", "repeat 3 \"ab\"", ""},
+		{"repeat none of it", "none is []\njoin \",\" [air (repeat 0 [1 2]), air (repeat 2 none), repeat 0 \"ab\"]", ""},
+		{"repeat is copies flattened", "and (eq (repeat 4 [1 2 3]) (copies 4 [1 2 3] | flat)) (eq (repeat 4 \"ab\") (copies 4 \"ab\" | join \"\"))", ""},
+		{"repeat a Thread of Threads", "repeat 2 [[1 2] [3]] | bend len | air", ""},
+		{"repeat into a chain", "repeat 3 [1 2 3] | sum", ""},
+
+		// `nth`, `first` and `last` read text as well as a Thread — by rune,
+		// like every other text verb, so a multibyte character is one element.
+		{"nth into text", "join \",\" [air (nth 1 \"hello\" else '?'), air (nth 9 \"hello\" else '?')]", ""},
+		{"first and last of text", "join \",\" [air (first \"hello\" else '?'), air (last \"hello\" else '?')]", ""},
+		{"of empty text", "join \",\" [air (first \"\" else '?'), air (last \"\" else '?'), air (nth 0 \"\" else '?')]", ""},
+		{"a multibyte character", "s is \"h\u00e9llo\u2192\"\njoin \",\" [air (nth 1 s else '?'), air (last s else '?'), air (nth 5 s else '?')]", ""},
+		{"text and Thread agree", "s is \"abc\"\nand (eq (nth 1 s) (fires s | nth 1)) (eq (last s) (fires s | last))", ""},
+		{"a chain over text positions", "s is \"abcde\"\nspan 0 4 | bend (i : nth i s | otherwise '?') | rev | air", ""},
+		{"still a Thread verb when nothing says otherwise", "[[1 2] [3]] | bend first | compact | bend air | join \",\"", ""},
+
+		// `under n` is the span 0 to n-1 written the way anyone who wants "the
+		// places of n things" writes it, and it is generated rather than built.
+		{"under summed", "under 5 | sum", ""},
+		{"under mapped", "under 4 | bend (i : mul i i) | air", ""},
+		{"under filtered", "under 6 | sift even | air", ""},
+		{"under folded", "under 5 | braid add 100", ""},
+		{"under none", "join \",\" [air (under 0 | len), air (under (neg 3) | len), air (under 1 | sum)]", ""},
+		{"under into a collect", "under 3 | bend inc | air", ""},
+		{"under seeking", "under 100 | seek (i : gt 40 (mul i i)) | otherwise 0", ""},
+		{"under counted", "under 20 | count (i : eq 0 (mod i 3))", ""},
+		{"under with the bound worked out", "n is 9\nunder (div n 2) | sum", ""},
+		{"under twice over", "under 3 | bend (i : under (add i 1) | sum) | air", ""},
+
+		// `wind` is `mend` that goes round, the way `wrap` is `nth` that does.
+		{"wind in range", "l is [1 2 3 4]\njoin \"  \" [air (wind 1 9 l), air l]", ""},
+		{"wind from the end", "air (wind (neg 1) 9 [1 2 3 4])", ""},
+		{"wind past the end", "join \",\" [air (wind 5 9 [1 2 3 4]), air (wind (neg 6) 9 [1 2 3 4])]", ""},
+		{"wind nothing", "none is []\nair (wind 0 9 none)", ""},
+		{"wind agrees with mend where they overlap",
+			"l is [1 2 3 4]\nspan 0 3 | all (i : eq (wind i 9 l) (mend i 9 l))", ""},
+		{"wind writes through a loop",
+			"step 0 xs is sum xs\nstep n xs is step (sub n 1) (wind (neg n) n xs)\nstep 8 [0 0 0]", ""},
+		{"a ring swap, read round and written round",
+			"swap a b l is\n" +
+				"  weave x is wrap a l else 0\n" +
+				"  weave y is wrap b l else 0\n" +
+				"  wind b x (wind a y l)\n" +
+				"rvrs l i t is\n" +
+				"  under (div t 2) | braid (m k : swap (add i k) (add i (sub t (add k 1))) m) l\n" +
+				"rvrs [0 1 2 3 4] 3 4 | air", "",
+		},
+
+		// A Link built and read without a loop in sight.
+		{"clumped after two binds", "bind (bind (link [1 2 3 4]) 1 2) 3 4 | clumped | bend len | sum", ""},
+		{"bound over a chain", "bound (bind (bind (link [1 2 3]) 1 2) 2 3) 1 3", ""},
+
+		// `couples` yields pairs for the same reason `zip` does, and every
+		// caller takes the pair apart, so the Twine is never built. Its two
+		// indices advance by hand, which is the part worth checking at the
+		// edges: two elements, one, none.
+		{"couples mapped", "couples [1 2 3 4] | bend ((a, b) : add a b) | sum", ""},
+		{"couples filtered", "couples [1 2 3 4] | sift ((a, b) : eq 1 a) | len", ""},
+		{"couples into a fold", "couples [1 2 3] | braid (n (a, b) : add n (mul a b)) 0", ""},
+		{"couples collected whole", "couples [1 2 3] | sift ((a, _) : gt 0 a)", ""},
+		{"couples counted", "couples (span 1 20) | count ((a, b) : eq 7 (add a b))", ""},
+		{"couples of two", "couples [1 2] | bend ((a, b) : add a b) | sum", ""},
+		{"couples of one", "couples [1] | bend ((a, b) : add a b) | len", ""},
+		{"couples of none", "couples [] | bend ((a, b) : add a b) | len", ""},
+		{"couples take", "couples (span 1 9) | take 4 | bend ((a, b) : add a b) | sum", ""},
+		{"couples seeking", "couples (span 1 9) | seek ((a, b) : eq 12 (mul a b))", ""},
+		{"couples of Twines", "couples [(1, 2) (3, 4) (5, 6)] | bend (((a, _), (c, _)) : add a c) | sum", ""},
+
+		// `enum` is the most-written pair producer of the three, and its Twine
+		// is nearly always taken apart by the very next stage.
+		{"enum mapped", `enum ["x" "y" "z"] | bend ((i, v) : join ":" [air i, v]) | join ","`, ""},
+		{"enum filtered", "enum [5 6 7] | sift ((i, _) : odd i) | bend ((_, v) : v) | sum", ""},
+		{"enum into a fold", "enum [5 6 7] | braid (n (i, v) : add n (mul i v)) 0", ""},
+		{"enum collected whole", "enum [5 6 7] | sift ((i, _) : gt 0 i)", ""},
+		{"enum counted", "enum [5 6 7 8] | count ((i, v) : eq i (sub v 5))", ""},
+		{"enum of nothing", "enum [] | bend ((i, v) : add i v) | len", ""},
+		{"enum of one", "enum [9] | bend ((i, v) : add i v) | sum", ""},
+		{"enum seeking", "enum [5 6 7] | seek ((i, v) : eq 7 v)", ""},
+		{"enum of Twines", "enum [(1, 2) (3, 4)] | bend ((i, (a, b)) : add i (add a b)) | sum", ""},
+
+		// A single stage or consumer whose function is written out on the spot
+		// is fused for the closure and the indirect call, not for an array.
+		{"one lambda stage collects", "[1 2 3] | bend (x : mul x 2)", ""},
+		{"one lambda stage sifts", "[1 2 3 4] | sift (x : odd x)", ""},
+		{"a named function stage is left alone", "twice n is mul n 2\n[1 2 3] | bend twice", ""},
+		{"a lambda predicate counts", "[1 2 3 4] | count (x : odd x)", ""},
+		{"a lambda predicate seeks", "[1 2 3 4] | seek (x : gt 2 x)", ""},
+		{"a lambda predicate over nothing", "[] | all (x : gt 0 x)", ""},
+		{"a lambda predicate that captures", "answer is\n  weave k is 3\n  [1 2 3 4] | any (x : eq k x)\nanswer", ""},
+
+		// The grid producers. `knots` builds one Knot per cell, and a
+		// neighbour verb builds a whole Thread per cell it is asked about —
+		// which is why these fuse with no stages at all, and why they are the
+		// one place a fused loop can differ from the verb in more than speed.
+		// Every corner of the grid has to be checked, since the fused loop does
+		// its own bounds test rather than borrowing the verb's.
+		{"knots counted", "g is Source | pattern\nknots g | count (k : eq 0 (col k))", "abc\ndef\n"},
+		{"knots sifted and collected", "g is Source | pattern\nknots g | sift (k : eq (row k) (col k)) | bend row", "abc\ndef\nghi\n"},
+		{"knots into a fold", "g is Source | pattern\nknots g | braid (n k : add n (row k)) 0", "ab\ncd\n"},
+		{"knots of a one-cell grid", "g is Source | pattern\nknots g | len", "x"},
+		{"knots reading its own cells", "g is Source | pattern\nknots g | count (k : eq (Held '#') (cell g k))", ".#.\n##.\n"},
+		{"nb4 counted at a corner", "g is Source | pattern\nnb4 g (knot 0 0) | count (eq '#')", "##\n#.\n"},
+		{"nb8 counted at a corner", "g is Source | pattern\nnb8 g (knot 0 0) | count (eq '#')", "##\n##\n"},
+		{"nb8 counted in the middle", "g is Source | pattern\nnb8 g (knot 1 1) | count (eq '#')", "###\n#.#\n###\n"},
+		{"nb4 collected", "g is Source | pattern\nnb4 g (knot 1 1) | bend (c : c) | air", "abc\ndef\nghi\n"},
+		{"nb8 of a one-cell grid", "g is Source | pattern\nnb8 g (knot 0 0) | len", "x"},
+		{"nb4 outside the grid", "g is Source | pattern\nnb4 g (knot 9 9) | len", "ab\ncd\n"},
+		{"nb4 at the far corner", "g is Source | pattern\nnb4 g (knot 1 1) | air", "ab\ncd\n"},
+		{"around4 collected", "g is Source | pattern\naround4 g (knot 0 0) | bend col | sum", "abc\ndef\n"},
+		{"around8 sifted", "g is Source | pattern\naround8 g (knot 1 1) | sift (k : eq 0 (row k)) | len", "abc\ndef\nghi\n"},
+		{"around8 seeking", "g is Source | pattern\naround8 g (knot 1 1) | seek (k : eq (Held 'a') (cell g k))", "abc\ndef\nghi\n"},
+		{
+			// A neighbour walk under a fold is deliberately left unfused: the
+			// accumulator may be the very grid being read, and an in-place
+			// `set` would then be seen by the rest of the walk. The verb copies
+			// its values out first, so this has to keep agreeing with it.
+			"a neighbour walk folding into the grid it reads",
+			"g is Source | pattern\n" +
+				"nb4 g (knot 0 0) | braid (q c : set q (knot 1 1) c) g | cells | air",
+			"ab\ncd\n",
+		},
+		{
+			"a whole erosion, which is every grid verb at once",
+			"g is Source | pattern\n" +
+				"thin p is knots p | braid (q k : pick (lt 3 (nb4 p k | count (eq '#'))) (set q k '.') q) p\n" +
+				"settle thin g | cells | count (eq '#')",
+			"..#..\n.###.\n..#..\n",
+		},
 
 		// Threads a function builds and does not hand back are released at its
 		// return. Each of these has to mean the same with that turned off.

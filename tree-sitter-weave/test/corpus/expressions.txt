@@ -177,10 +177,10 @@ total [1 2]
         (integer)))))
 
 ================================================================================
-`former`, `latter` and `that`, the words a hole is spelled with
+`fore`, `mid`, `aft` and `that`, the words a hole is spelled with
 ================================================================================
 
-sums is pairs | bend (add former latter)
+sums is pairs | bend (add fore aft)
 
 (sums, [1 2] | braid (add this that) 0)
 

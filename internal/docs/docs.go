@@ -18,6 +18,7 @@ import (
 	"html/template"
 	"sort"
 	"strings"
+	"sync"
 
 	_ "embed"
 
@@ -231,6 +232,44 @@ func talents() []Word {
 		out[i].Search = strings.ToLower(out[i].Name + " " + out[i].Means + " " + out[i].Gloss)
 	}
 	return out
+}
+
+// Gloss answers with the second voice for a verb, a keyword, a particle, a
+// hole word, a shape or a constructor — anything the page has a card for —
+// and with the empty string for a name it does not know.
+//
+// The language server hovers with this rather than the plain description. The
+// reader in an editor is not being taught the language; they are looking a
+// name up while writing it, which is the same reader the page is written for.
+// The plain description stays where it was: in diagnostics, where the reader
+// may well be meeting the verb for the first time.
+func Gloss(name string) string {
+	glossIndexOnce.Do(buildGlossIndex)
+	return glossIndex[name]
+}
+
+var (
+	glossIndexOnce sync.Once
+	glossIndex     map[string]string
+)
+
+func buildGlossIndex() {
+	p := Build()
+	glossIndex = map[string]string{}
+	for _, g := range p.Groups {
+		for _, v := range g.Verbs {
+			glossIndex[v.Name] = v.Gloss
+		}
+	}
+	for _, w := range p.Words {
+		glossIndex[w.Name] = w.Gloss
+	}
+	for _, s := range p.Shapes {
+		glossIndex[s.Name] = s.Gloss
+		for _, c := range s.Ctors {
+			glossIndex[c.Name] = c.Doc
+		}
+	}
 }
 
 // KeywordNames is every word the lexer reserves, which the sync test compares

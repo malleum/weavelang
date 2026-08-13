@@ -107,7 +107,7 @@ func TestTheCameosAreEachThereOnce(t *testing.T) {
 		"Ú-veth":                               "flow",
 		"ghobe'":                               "none",
 		"Crescit ut necesse est":               "perms",
-		"an Air of 31 and 30":                  "bin",
+		"an Air of 31 and 30":                  "unbase",
 		"there is none through the death gate": "route",
 	}
 	all := strings.Join(allGlosses(), "\n")

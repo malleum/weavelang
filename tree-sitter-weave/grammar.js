@@ -53,6 +53,12 @@ module.exports = grammar({
     [$.type_declaration, $._atom],
     [$.application, $._atom],
     [$._application_or_atom, $.application],
+    // After an inline ward's arms, another `(` is either one more arm or an
+    // argument to whatever the ward is the function of. The compiler decides
+    // by scanning ahead for a `:` at the group's own level; LR cannot, so both
+    // readings are explored and the one that parses wins. When both parse,
+    // `application`'s dynamic -1 gives the arm.
+    [$._ward_inline],
   ],
 
   rules: {
@@ -76,10 +82,17 @@ module.exports = grammar({
     ),
 
     // `fib n is add (fib (sub n 1)) (fib (sub n 2))`
+    // `(width, height) is dimsOf Source` takes the value apart into several
+    // names, the same way a `weave` binding may.
     definition: $ => seq(
-      optional('remember'),
-      field('name', $.identifier),
-      field('parameters', repeat($._pattern_atom)),
+      choice(
+        seq(
+          optional('remember'),
+          field('name', $.identifier),
+          field('parameters', repeat($._pattern_atom)),
+        ),
+        field('pattern', $._destructuring),
+      ),
       $._is,
       field('body', $._body),
     ),
@@ -123,16 +136,26 @@ module.exports = grammar({
     // other block result is an expression on one logical line.
     _block: $ => seq(
       repeat($.local_binding),
-      choice($.ward, seq($._expression, $._newline)),
+      choice(alias($._ward_block, $.ward), seq($._expression, $._newline)),
     ),
 
+    // `weave (a, b) is p` takes the value apart instead of naming it. A bare
+    // name is a name and not a pattern, so only the bracketed shapes and `_`
+    // count — the same rule the parser follows.
     local_binding: $ => seq(
       field('keyword', choice('weave', 'channel')),
-      field('name', $.identifier),
-      field('parameters', repeat($._pattern_atom)),
+      choice(
+        seq(
+          field('name', $.identifier),
+          field('parameters', repeat($._pattern_atom)),
+        ),
+        field('pattern', $._destructuring),
+      ),
       $._is,
       field('value', $._body),
     ),
+
+    _destructuring: $ => choice($.twine_pattern, $.thread_pattern, $.wildcard),
 
     // ----------------------------------------------------------- expressions
 
@@ -173,14 +196,22 @@ module.exports = grammar({
       $._group,
       $.thread,
       $.web,
+      // A ward is an atom because the compiler's parser makes it one: the
+      // inline form is an expression, so `add 1 (ward c (Light : 1) (_ : 0))`
+      // is a call with a ward for an argument. Only the inline form, though —
+      // letting the block form in here would let an application swallow an
+      // indented block and read a whole definition as one long call.
+      alias($._ward_inline, $.ward),
     ),
 
     // A word where a value goes: one of the arguments an enclosing bracket
-    // group or pipeline stage stands ready to receive. `it` and `this` are `_`
-    // spelled as words, as `gives` is for `:` — see the lexer's keyword table.
-    // `that` is the second argument; `former` and `latter` are the two halves
-    // of the first, and ask for it to be opened.
-    hole: _ => choice('_', 'it', 'this', 'that', 'former', 'latter'),
+    // group or pipeline stage stands ready to receive. `this` is `_` spelled as
+    // a word, as `gives` is for `:` — see the lexer's keyword table. `that` is
+    // the second argument. The rest are components of the first, one set per
+    // width: `former` and `latter` for a Twine of two, `fore`, `mid` and `aft`
+    // for one of three.
+    hole: _ =>
+      choice('_', 'this', 'that', 'former', 'latter', 'fore', 'mid', 'aft'),
 
     lambda: $ => seq(
       '(',
@@ -222,7 +253,18 @@ module.exports = grammar({
       field('value', $._application_or_atom),
     ),
 
-    ward: $ => seq(
+    // A ward's arms go in an indented block, or — where there is no room for
+    // one, which is anywhere a ward is an expression rather than a body — in
+    // brackets on the same line.
+    //
+    // The two forms are genuinely ambiguous as far as the item sets go, and
+    // deliberately so: a bracketed arm and a lambda are written the same, so
+    // `ward c (Light : 1) (_ : 0)` also reads as `c` applied to two lambdas.
+    // What separates them is the token after the subject. The block form must
+    // see `_indent` there and the inline form must not, so exactly one of the
+    // two GLR branches can finish, and the scanner decides which by whether the
+    // next line is indented. Nothing here needs a precedence.
+    _ward_block: $ => seq(
       'ward',
       field('subject', $._expression),
       $._indent,
@@ -230,10 +272,24 @@ module.exports = grammar({
       $._dedent,
     ),
 
+    _ward_inline: $ => seq(
+      'ward',
+      field('subject', $._application_or_atom),
+      repeat1($.ward_arm_inline),
+    ),
+
     ward_arm: $ => seq(
       field('pattern', $._pattern),
       choice(':', 'gives'),
       field('body', $._body),
+    ),
+
+    ward_arm_inline: $ => seq(
+      '(',
+      field('pattern', $._pattern),
+      choice(':', 'gives'),
+      field('body', $._expression),
+      ')',
     ),
 
     inline_let: $ => prec.right(seq(
@@ -246,8 +302,13 @@ module.exports = grammar({
 
     inline_binding: $ => seq(
       optional(choice('weave', 'channel')),
-      field('name', $.identifier),
-      field('parameters', repeat($._pattern_atom)),
+      choice(
+        seq(
+          field('name', $.identifier),
+          field('parameters', repeat($._pattern_atom)),
+        ),
+        field('pattern', $._destructuring),
+      ),
       $._is,
       field('value', $._application_or_atom),
     ),
@@ -292,7 +353,7 @@ module.exports = grammar({
 
     rest_pattern: $ => seq('..', optional(choice($.identifier, '_'))),
 
-    wildcard: _ => choice('_', 'it', 'this'),
+    wildcard: _ => choice('_', 'this'),
 
     // ----------------------------------------------------------------- types
 

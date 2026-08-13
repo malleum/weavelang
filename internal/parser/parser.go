@@ -17,6 +17,7 @@
 package parser
 
 import (
+	"fmt"
 	"github.com/malleum/weave/internal/ast"
 	"github.com/malleum/weave/internal/diag"
 	"github.com/malleum/weave/internal/lexer"
@@ -27,7 +28,7 @@ import (
 // always non-nil so later phases can still run over whatever parsed cleanly.
 func Parse(src string, bag *diag.Bag) *ast.File {
 	toks := lexer.Lex(src, bag)
-	p := &parser{toks: toks, bag: bag}
+	p := &parser{toks: toks, bag: bag, armsAt: -1}
 	return p.parseFile()
 }
 
@@ -39,7 +40,7 @@ func Parse(src string, bag *diag.Bag) *ast.File {
 func ParseTypeString(src string) (*ast.TypeExpr, error) {
 	bag := diag.New("<signature>", src)
 	toks := lexer.Lex(src, bag)
-	p := &parser{toks: toks, bag: bag}
+	p := &parser{toks: toks, bag: bag, armsAt: -1}
 	ty := p.parseType()
 	if !p.at(token.Newline) && !p.at(token.EOF) {
 		p.errf(p.cur().Pos, "unexpected %s after type", describe(p.cur()))
@@ -59,22 +60,19 @@ type parser struct {
 	// multi-clause definition collect into one Decl.
 	decls map[string]*ast.Decl
 
-	// armStop is set while reading a ward's subject, where a bracketed group
-	// holding a `:` is an arm rather than an argument. Every bracketed atom
-	// clears it while reading inside itself, so the rule reaches exactly one
-	// level deep — which is the level the arms are on.
-	armStop bool
+	// armsAt is the token a ward's inline arms begin at while its subject is
+	// being read, or -1 when there are none. See parseWard for how it is found:
+	// it is one exact position rather than a rule about what an argument may
+	// look like, which is what lets a lambda appear in a subject.
+	armsAt int
 }
 
 // ------------------------------------------------------------------ plumbing
 
-// holdArmStop clears the ward-subject rule for the bracketed group about to be
-// read, and returns the way to put it back.
-func (p *parser) holdArmStop() func() {
-	saved := p.armStop
-	p.armStop = false
-	return func() { p.armStop = saved }
-}
+// holdArmStop is kept for the bracketed atoms that call it, but has nothing
+// left to do: the arms are found by position now, and no position inside a
+// bracketed group can be the one the arms start at.
+func (p *parser) holdArmStop() func() { return func() {} }
 
 func (p *parser) cur() token.Token     { return p.toks[p.pos] }
 func (p *parser) kind() token.Kind     { return p.toks[p.pos].Kind }
@@ -201,10 +199,11 @@ func (p *parser) reportStrayHoles(f *ast.File) {
 	}
 	for _, h := range stray {
 		switch {
-		case h.Half != ast.HoleWhole:
+		case h.Parts != 0:
 			p.bag.AddHint(h.P,
-				"`former` and `latter` are the two halves of the value given to the brackets around them, or to the pipeline stage they are in",
-				"`%s` has no pair to be half of here", ast.HoleVarName(h.Slot, h.Half))
+				"`former` and `latter` are the halves of a Twine of two, and `fore`, `mid` and `aft` the parts of a Twine of three — of the value given to the brackets around them, or to the pipeline stage they are in",
+				"`%s` has no Twine to be part of here",
+				ast.HoleVarName(h.Slot, h.Parts, h.At))
 		case h.Slot > 0:
 			p.bag.AddHint(h.P,
 				"`that` is the second argument of the brackets around it",
@@ -238,6 +237,12 @@ func (p *parser) parseTopLevel(f *ast.File) {
 			p.parseDecl(f)
 			return
 		}
+	}
+	// `(width, height) is dimsOf Source` — a definition that takes its value
+	// apart, the same way a `weave` binding may.
+	if p.startsBindPattern() && p.lineForm() == formDecl {
+		p.parsePatternDecl(f)
+		return
 	}
 	if p.at(token.Upper) && p.startsTypeDecl() {
 		p.parseTypeDecl(f)
@@ -386,6 +391,23 @@ func (p *parser) parseSig() {
 	d.Sig = ty
 }
 
+// parsePatternDecl reads a top-level definition that takes its value apart.
+// The name it is given cannot be written in a program — a space is not a name
+// character — so it can never collide with one, and nothing but the expansion
+// in ast.ExpandPatterns ever mentions it.
+func (p *parser) parsePatternDecl(f *ast.File) {
+	pos := p.cur().Pos
+	pat := p.parsePatternAtom()
+	p.expect(token.Is)
+	body := p.parseBody()
+	f.Decls = append(f.Decls, &ast.Decl{
+		Name:    fmt.Sprintf("whole %d", len(f.Decls)),
+		NamePos: pos,
+		Pat:     pat,
+		Clauses: []*ast.Clause{{Body: body, ClauseP: pos}},
+	})
+}
+
 func (p *parser) parseDecl(f *ast.File) {
 	memo := p.accept(token.Remember)
 	name := p.next()
@@ -507,6 +529,14 @@ func (p *parser) parseBind() *ast.Bind {
 	p.next()
 
 	nameTok := p.cur()
+	// A binding may take its value apart instead of naming it whole:
+	// `weave (a, b) is p`. Only `weave` does — a `channel` is a function, and a
+	// function has a name.
+	if !isChannel && p.startsBindPattern() {
+		pat := p.parsePatternAtom()
+		p.expect(token.Is)
+		return &ast.Bind{Pat: pat, NamePos: nameTok.Pos, Value: p.parseBody()}
+	}
 	if !p.at(token.Lower) {
 		p.errf(nameTok.Pos, "expected a name after `%s`, found %s",
 			map[bool]string{true: "channel", false: "weave"}[isChannel], describe(nameTok))
@@ -544,6 +574,7 @@ func (p *parser) parseExpr() ast.Expr {
 			op := p.next()
 			right := p.parseApp()
 			if use := ast.Holes(right); use.Any {
+				p.reportWidthClash(use)
 				// `web | get _ "a"` puts the piped value where the `_` is
 				// rather than at the end. A binding, not a lambda, so the
 				// value is still evaluated once however many `_` there are.
@@ -554,12 +585,12 @@ func (p *parser) parseExpr() ast.Expr {
 						"`that` is the second argument of the brackets around it, and a pipeline stage hands over one value; write the brackets",
 						"a pipeline stage has no second argument")
 				}
-				if use.Opened {
-					// `former`/`latter` ask for the pair opened, and a match is
-					// what opens one: `pair | add former latter`.
+				if use.Parts > 0 {
+					// `fore`/`mid`/`aft` ask for the Twine opened, and a match
+					// is what opens one: `pair | add fore aft`.
 					left = &ast.Ward{
 						Subject: left,
-						Arms:    []*ast.Arm{{Pat: pairPattern(op.Pos), Body: ast.FillHoles(right), P: op.Pos}},
+						Arms:    []*ast.Arm{{Pat: partsPattern(op.Pos, use.Parts), Body: ast.FillHoles(right), P: op.Pos}},
 						P:       op.Pos,
 						Via:     op.Kind.String(),
 					}
@@ -579,7 +610,7 @@ func (p *parser) parseExpr() ast.Expr {
 			fn := p.parseApp()
 			// `as` feeds the function, not the value, the same way `where`
 			// does: `xs as mul _ 2` maps by `(x : mul x 2)`.
-			fn = holeLambda(fn, op.Pos)
+			fn = p.holeLambda(fn, op.Pos)
 			// `xs as f` is `bend f xs`.
 			left = &ast.App{
 				Fn:   &ast.Var{Name: "bend", P: op.Pos},
@@ -609,7 +640,7 @@ func (p *parser) parseExpr() ast.Expr {
 			pred := p.parseApp()
 			// `where` feeds the predicate, not the value, so a `_` in it makes
 			// a function: `xs where mod _ 2` filters by `(x : mod x 2)`.
-			pred = holeLambda(pred, op.Pos)
+			pred = p.holeLambda(pred, op.Pos)
 			// `xs where p` is `sift p xs`.
 			left = &ast.App{
 				Fn:   &ast.Var{Name: "sift", P: op.Pos},
@@ -639,17 +670,18 @@ func feed(fn, value ast.Expr, pos token.Pos, via string) ast.Expr {
 
 // holeLambda turns an expression containing `_` into the function of one
 // argument it stands for, and leaves anything else alone.
-func holeLambda(e ast.Expr, pos token.Pos) ast.Expr {
+func (p *parser) holeLambda(e ast.Expr, pos token.Pos) ast.Expr {
 	use := ast.Holes(e)
 	if !use.Any {
 		return e
 	}
-	// The first parameter is the value whole, or opened into its two halves
-	// once a `former` or `latter` has asked for that; a second is added as
-	// soon as a `that` appears anywhere in the group.
+	p.reportWidthClash(use)
+	// The first parameter is the value whole, or taken apart once a `fore`, a
+	// `mid` or an `aft` has asked for that; a second is added as soon as a
+	// `that` appears anywhere in the group.
 	params := []ast.Pattern{&ast.PVar{Name: ast.HoleName, P: pos}}
-	if use.Opened {
-		params[0] = pairPattern(pos)
+	if use.Parts > 0 {
+		params[0] = partsPattern(pos, use.Parts)
 	}
 	if use.Args > 1 {
 		params = append(params, &ast.PVar{Name: ast.PartnerName, P: pos})
@@ -657,15 +689,31 @@ func holeLambda(e ast.Expr, pos token.Pos) ast.Expr {
 	return &ast.Lambda{Params: params, Body: ast.FillHoles(e), P: pos}
 }
 
-// pairPattern is `(former, latter)`: the two halves those words ask for.
-func pairPattern(pos token.Pos) ast.Pattern {
-	return &ast.PTwine{
-		Elems: []ast.Pattern{
-			&ast.PVar{Name: ast.FormerName, P: pos},
-			&ast.PVar{Name: ast.LatterName, P: pos},
-		},
-		P: pos,
+// partsPattern is `(fore, aft)` or `(fore, mid, aft)`: the components those
+// words ask for. `aft` is the last of however many there are, so the width is
+// what a `mid` decided, and the pattern is what fixes it.
+// reportWidthClash catches a group whose component words disagree about how
+// wide the Twine is. Each word carries its own width, so `add former aft` says
+// two and three in the same breath and cannot be given a meaning.
+func (p *parser) reportWidthClash(use ast.HoleUse) {
+	if !use.Clashed {
+		return
 	}
+	p.bag.AddHint(use.ClashAt,
+		"`former` and `latter` are the halves of a Twine of two; `fore`, `mid` and `aft` are the parts of one of three. One group cannot ask for both",
+		"these words disagree about how wide the Twine is")
+}
+
+// partsPattern is `(former, latter)` or `(fore, mid, aft)`: the components the
+// words of that width ask for. The width came from the words themselves, so
+// there is nothing here to work out.
+func partsPattern(pos token.Pos, n int) ast.Pattern {
+	names := ast.PartNames(n)
+	elems := make([]ast.Pattern, len(names))
+	for i, name := range names {
+		elems[i] = &ast.PVar{Name: name, P: pos}
+	}
+	return &ast.PTwine{Elems: elems, P: pos}
 }
 
 // parseApp reads a juxtaposition chain, `f a b`.
@@ -684,15 +732,16 @@ func (p *parser) parseApp() ast.Expr {
 // startsAtom reports whether the current token can begin an atom, which is how
 // the parser knows where a juxtaposition chain ends.
 func (p *parser) startsAtom() bool {
-	if p.armStop && p.kind() == token.LParen && p.armGroupAhead() {
-		// Reading a ward's subject: this group is an arm, not an argument.
+	if p.pos == p.armsAt {
+		// Reading a ward's subject, and this is where its arms begin.
 		return false
 	}
 	switch p.kind() {
 	case token.Int, token.Float, token.Char, token.Text,
 		token.Lower, token.Upper, token.LParen, token.LBracket, token.LBrace,
 		token.Ward, token.Weave,
-		token.Underscore, token.Partner, token.Former, token.Latter:
+		token.Underscore, token.Partner, token.Former, token.Latter,
+		token.Fore, token.Mid, token.Aft:
 		return true
 	}
 	return false
@@ -735,16 +784,25 @@ func (p *parser) parseAtom() ast.Expr {
 		return p.parseInlineLet()
 	case token.Underscore:
 		p.next()
-		return &ast.Hole{P: t.Pos, Half: ast.HoleWhole}
+		return &ast.Hole{P: t.Pos}
 	case token.Partner:
 		p.next()
-		return &ast.Hole{P: t.Pos, Slot: 1, Half: ast.HoleWhole}
+		return &ast.Hole{P: t.Pos, Slot: 1}
 	case token.Former:
 		p.next()
-		return &ast.Hole{P: t.Pos, Half: 0}
+		return &ast.Hole{P: t.Pos, Parts: 2, At: 0}
 	case token.Latter:
 		p.next()
-		return &ast.Hole{P: t.Pos, Half: 1}
+		return &ast.Hole{P: t.Pos, Parts: 2, At: 1}
+	case token.Fore:
+		p.next()
+		return &ast.Hole{P: t.Pos, Parts: 3, At: 0}
+	case token.Mid:
+		p.next()
+		return &ast.Hole{P: t.Pos, Parts: 3, At: 1}
+	case token.Aft:
+		p.next()
+		return &ast.Hole{P: t.Pos, Parts: 3, At: 2}
 	default:
 		p.errf(t.Pos, "expected an expression, found %s", describe(t))
 		p.recover()
@@ -779,14 +837,14 @@ func (p *parser) parseParen() ast.Expr {
 		// for. Nesting resolves to the innermost group, so `(gt 0 (mod _ 2))`
 		// makes a function of the inner brackets and is a type error, rather
 		// than quietly meaning something else.
-		return holeLambda(first, open.Pos)
+		return p.holeLambda(first, open.Pos)
 	}
 	elems := []ast.Expr{first}
 	for p.accept(token.Comma) {
 		elems = append(elems, p.parseExpr())
 	}
 	p.expect(token.RParen)
-	return holeLambda(&ast.TwineLit{Elems: elems, P: open.Pos}, open.Pos)
+	return p.holeLambda(&ast.TwineLit{Elems: elems, P: open.Pos}, open.Pos)
 }
 
 // parenIsLambda looks ahead for a `:` directly inside the just-opened paren,
@@ -878,19 +936,40 @@ func (p *parser) parseWebLit() ast.Expr {
 	return &ast.WebLit{Pairs: pairs, P: open.Pos}
 }
 
-// parseWard reads a pattern match and its indented arms.
+// parseWard reads a pattern match and its arms, in either of the two shapes a
+// ward has:
+//
+//	ward c              ward c (Light : 1) (Shadow : 0)
+//	  Light : 1
+//	  Shadow : 0
+//
+// What separates them is the line, not the brackets. If the ward's line is
+// followed by an indented block then the arms are in that block and *all* of
+// the line is the subject; otherwise the arms are the run of bracketed
+// `pattern : body` groups the line ends with, and the subject is what comes
+// before them.
+//
+// The earlier rule — the subject stops at the first bracketed group holding a
+// `:` — could not tell an arm from a lambda, so `ward seekidx (r : test r) rows`
+// read the lambda as an arm and the rest as nothing at all. Deciding on the
+// block first, and then only on a run at the *end* of the line, leaves a lambda
+// anywhere in a subject unambiguous: it has something after it.
+//
+// This is also the rule the tree-sitter grammar already used, so the two agree.
 func (p *parser) parseWard() ast.Expr {
 	kw := p.expect(token.Ward)
 
-	// The subject stops at the first bracketed `pattern : body`, so a ward
-	// whose arms are short enough fits on one line and can sit inside an
-	// expression, where the block form cannot.
-	saved := p.armStop
-	p.armStop = true
+	saved := p.armsAt
+	if p.blockArmsAhead() {
+		p.armsAt = -1
+	} else {
+		p.armsAt = p.inlineArmsStart()
+	}
+	inline := p.armsAt
 	subject := p.parseExpr()
-	p.armStop = saved
+	p.armsAt = saved
 
-	if p.at(token.LParen) {
+	if inline >= 0 && p.at(token.LParen) {
 		return p.parseInlineArms(kw, subject)
 	}
 
@@ -929,6 +1008,24 @@ func (p *parser) parseWard() ast.Expr {
 	return &ast.Ward{Subject: subject, Arms: arms, P: kw.Pos}
 }
 
+// matchingClose finds the bracket closing the group opening at at, or the end
+// of the token stream when nothing does.
+func (p *parser) matchingClose(at int) int {
+	depth := 0
+	for i := at; i < len(p.toks); i++ {
+		switch p.toks[i].Kind {
+		case token.LParen, token.LBracket, token.LBrace:
+			depth++
+		case token.RParen, token.RBracket, token.RBrace:
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(p.toks)
+}
+
 // parseInlineArms reads the one-line form, `ward c (Light : 1) (_ : 0)`.
 //
 // An arm and a lambda are written the same way, which is not a coincidence and
@@ -937,7 +1034,7 @@ func (p *parser) parseWard() ast.Expr {
 // arm, and everywhere else it is a lambda.
 func (p *parser) parseInlineArms(kw token.Token, subject ast.Expr) ast.Expr {
 	var arms []*ast.Arm
-	for p.at(token.LParen) && p.armGroupAhead() {
+	for p.at(token.LParen) && p.groupHoldsColon(p.pos, p.matchingClose(p.pos)) {
 		open := p.next()
 		pat := p.parsePattern()
 		if !p.at(token.Colon) {
@@ -959,25 +1056,94 @@ func (p *parser) parseInlineArms(kw token.Token, subject ast.Expr) ast.Expr {
 	return &ast.Ward{Subject: subject, Arms: arms, P: kw.Pos, Inline: true}
 }
 
-// armGroupAhead reports whether the `(` under the cursor opens a group holding
-// a `:` at its own level, which is what an arm looks like.
-func (p *parser) armGroupAhead() bool {
+// lineEnd is where the logical line under the cursor finishes: its newline, or
+// the bracket of whatever encloses it, whichever comes first.
+func (p *parser) lineEnd() int {
 	depth := 0
-	for i := p.pos + 1; i < len(p.toks); i++ {
+	for i := p.pos; i < len(p.toks); i++ {
 		switch p.toks[i].Kind {
 		case token.LParen, token.LBracket, token.LBrace:
 			depth++
 		case token.RParen, token.RBracket, token.RBrace:
 			if depth == 0 {
-				return false
+				return i
 			}
+			depth--
+		case token.Newline, token.EOF, token.Dedent:
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(p.toks)
+}
+
+// blockArmsAhead reports whether an indented block opens after this line, which
+// is what says a ward's arms are down there rather than on the line itself.
+func (p *parser) blockArmsAhead() bool {
+	end := p.lineEnd()
+	return end < len(p.toks) && p.toks[end].Kind == token.Newline &&
+		end+1 < len(p.toks) && p.toks[end+1].Kind == token.Indent
+}
+
+// inlineArmsStart finds where the run of bracketed `pattern : body` groups the
+// line ends with begins, or -1 when the line does not end in one. Only a run
+// reaching the very end of the line counts, which is what keeps a lambda in the
+// middle of a subject from being mistaken for an arm.
+func (p *parser) inlineArmsStart() int {
+	end := p.lineEnd()
+	start := end
+	for {
+		open := p.groupBefore(start)
+		if open < 0 || !p.groupHoldsColon(open, start-1) {
+			break
+		}
+		start = open
+	}
+	if start == end {
+		return -1
+	}
+	return start
+}
+
+// groupBefore finds the `(` matching a `)` sitting just before at, or -1 when
+// what is there is not a closed bracket group within this line.
+func (p *parser) groupBefore(at int) int {
+	if at-1 < p.pos || p.toks[at-1].Kind != token.RParen {
+		return -1
+	}
+	depth := 0
+	for i := at - 1; i >= p.pos; i-- {
+		switch p.toks[i].Kind {
+		case token.RParen, token.RBracket, token.RBrace:
+			depth++
+		case token.LParen, token.LBracket, token.LBrace:
+			depth--
+			if depth == 0 {
+				if p.toks[i].Kind != token.LParen {
+					return -1
+				}
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// groupHoldsColon reports whether the group from open to close has a `:` at its
+// own level, which is what an arm has and a group of anything else does not.
+func (p *parser) groupHoldsColon(open, close int) bool {
+	depth := 0
+	for i := open + 1; i < close; i++ {
+		switch p.toks[i].Kind {
+		case token.LParen, token.LBracket, token.LBrace:
+			depth++
+		case token.RParen, token.RBracket, token.RBrace:
 			depth--
 		case token.Colon:
 			if depth == 0 {
 				return true
 			}
-		case token.Newline, token.EOF:
-			return false
 		}
 	}
 	return false
@@ -993,6 +1159,16 @@ func (p *parser) parseInlineLet() ast.Expr {
 		// After a comma the keyword may be repeated, but need not be.
 		if !p.accept(token.Weave) {
 			p.accept(token.Channel)
+		}
+		if p.startsBindPattern() {
+			pos := p.cur().Pos
+			pat := p.parsePatternAtom()
+			p.expect(token.Is)
+			binds = append(binds, &ast.Bind{Pat: pat, NamePos: pos, Value: p.parseExpr()})
+			if p.accept(token.Comma) {
+				continue
+			}
+			break
 		}
 		if !p.at(token.Lower) {
 			p.errf(p.cur().Pos, "expected a binding name, found %s", describe(p.cur()))
@@ -1020,6 +1196,21 @@ func (p *parser) parseInlineLet() ast.Expr {
 }
 
 // ---------------------------------------------------------------- patterns
+
+// startsBindPattern reports whether what follows `weave` takes the value apart
+// rather than naming it.
+//
+// A bare name is a name, not a pattern — `weave x is 1` binds `x` and does not
+// match against it — and a constructor with no brackets would be ambiguous with
+// one. So the shapes that count are the bracketed ones and `_`, which is what
+// anyone writing a destructuring binding reaches for.
+func (p *parser) startsBindPattern() bool {
+	switch p.kind() {
+	case token.LParen, token.LBracket, token.Underscore:
+		return true
+	}
+	return false
+}
 
 func (p *parser) startsPattern() bool {
 	switch p.kind() {

@@ -47,20 +47,34 @@ func New(file, src string) *Bag {
 
 // Add records a diagnostic at pos.
 func (b *Bag) Add(pos token.Pos, format string, args ...any) {
-	b.diags = append(b.diags, Diagnostic{Pos: pos, Msg: fmt.Sprintf(format, args...)})
+	b.add(Diagnostic{Pos: pos, Msg: fmt.Sprintf(format, args...)})
 }
 
 // AddHint records a diagnostic at pos along with a suggested fix.
 func (b *Bag) AddHint(pos token.Pos, hint, format string, args ...any) {
-	b.diags = append(b.diags, Diagnostic{Pos: pos, Msg: fmt.Sprintf(format, args...), Hint: hint})
+	b.add(Diagnostic{Pos: pos, Msg: fmt.Sprintf(format, args...), Hint: hint})
 }
 
 // AddSoft records a diagnostic the compiler could proceed past. See
 // Diagnostic.Soft.
 func (b *Bag) AddSoft(pos token.Pos, hint, format string, args ...any) {
-	b.diags = append(b.diags, Diagnostic{
+	b.add(Diagnostic{
 		Pos: pos, Msg: fmt.Sprintf(format, args...), Hint: hint, Soft: true,
 	})
+}
+
+// add records a diagnostic, unless the same thing has already been said at the
+// same place. One mistake reported twice is never more useful than once, and a
+// desugaring that expands one line into several — a definition that takes its
+// value apart becomes a projection per name — would otherwise say the same
+// thing once per name.
+func (b *Bag) add(d Diagnostic) {
+	for _, seen := range b.diags {
+		if seen.Pos == d.Pos && seen.Msg == d.Msg {
+			return
+		}
+	}
+	b.diags = append(b.diags, d)
 }
 
 // Empty reports whether nothing has been recorded that should stop the

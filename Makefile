@@ -3,15 +3,21 @@ GO      ?= go
 BIN     ?= bin/weave
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all build test fmt vet lint check examples fmtcheck grammar docs clean
+.PHONY: all build test test-full fmt vet lint check examples fmtcheck grammar docs aoc clean
 
 all: build
 
 build:
 	$(GO) build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/weave
 
+# Everything but the differential suite, which compiles the whole corpus four
+# ways and takes half an hour on a slow machine. That one belongs on a push, not
+# between two edits; `make test-full` and continuous integration run it.
 test:
-	$(GO) test ./...
+	$(GO) test -short -timeout 40m ./...
+
+test-full:
+	$(GO) test -timeout 90m ./...
 
 fmt:
 	$(GO) fmt ./...
@@ -32,9 +38,19 @@ examples: build
 	done
 	./$(BIN) test examples/*.weave
 
-# Every example must already be in canonical form.
+# Every example must already be in canonical form, and so must the Advent of
+# Code solutions — they are the only programs here written to be read rather
+# than to show a feature off, so they are the ones worth holding the canonical
+# form to.
 fmtcheck: build
-	./$(BIN) fmt -check examples/*.weave
+	./$(BIN) fmt -check examples/*.weave aoc/*/*.weave
+
+# The Advent of Code solutions, checked against the examples in the puzzle text.
+# They are not in `examples/` because they are not teaching material: they are
+# the language being used in anger, and what keeps them here is that they break
+# when a verb changes under them.
+aoc: build
+	./$(BIN) test aoc/*/*.weave
 
 # Regenerate the tree-sitter parser after a grammar change. src/parser.c is
 # committed, so editors need no CLI; this is what keeps it current.

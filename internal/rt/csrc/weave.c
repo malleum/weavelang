@@ -29,11 +29,17 @@
 typedef struct Chunk {
   struct Chunk *prev;
   size_t cap;
+  uint64_t serial; // when it was taken, so a region knows what is its own
   char data[];
 } Chunk;
 
 static Chunk *g_chunk = NULL;
 static const size_t CHUNK_MIN = 1u << 20;
+static uint64_t g_serial;
+// How many blocks have been handed back. A region only has to empty the free
+// lists if something was freed while it was open — a block freed before it was
+// opened lives outside it and is still good.
+static uint64_t g_frees;
 
 // Blocks up to 8 KiB are indexed directly by size/16. The list heads and the
 // bump pointer live in weave.h so that the fast path can be inlined: left as a
@@ -53,7 +59,43 @@ typedef struct {
 } LargeBin;
 static LargeBin g_large[LARGE_BINS];
 
-void w_init(void) {}
+// A ceiling on what the program may take from the operating system, in bytes,
+// and what it has taken so far. Zero is no ceiling, which is what every
+// ordinary run has: a batch job that is given an input is entitled to whatever
+// that input costs.
+//
+// `weave trace` is the exception, because it runs a program nobody asked to
+// run, on a file that is being typed into. A definition that means to allocate
+// for ever should cost that file its own line's ghost text and nothing else —
+// certainly not the machine the editor is running on. So the ceiling comes in
+// through the environment rather than through the program, and the tracer sets
+// it. See W_EXIT_OVER_MEMORY.
+//
+// A chunk is never handed back, so what has been taken is also the high-water
+// mark, and one comparison per megabyte is not a cost worth measuring.
+static size_t g_mem_cap;
+static size_t g_mem_taken;
+
+void w_init(void) {
+  const char *cap = getenv("WEAVE_MEM_CAP");
+  if (cap && *cap) {
+    g_mem_cap = (size_t)strtoull(cap, NULL, 10);
+  }
+#ifdef WEAVE_TALLY
+  w_tally_start();
+#endif
+}
+
+// w_over_memory stops a program that has gone past the ceiling. Whatever it
+// reported before it did stands, which is the whole point, so the records go
+// out before the door closes.
+static _Noreturn void w_over_memory(size_t want) {
+  fflush(stdout);
+  fprintf(stderr, "weave: past the %zu byte ceiling, asking for %zu more\n",
+          g_mem_cap, want);
+  fflush(stderr);
+  _Exit(W_EXIT_OVER_MEMORY);
+}
 
 // large_bin finds the list for a size, claiming an empty bin if asked to.
 static LargeBin *large_bin(size_t words, bool claim) {
@@ -74,10 +116,19 @@ static LargeBin *large_bin(size_t words, bool claim) {
 }
 
 static Chunk *new_chunk(size_t cap) {
+  // Every byte the program takes from the operating system passes through
+  // here, so this is the only place the ceiling has to be checked.
+  g_mem_taken += sizeof(Chunk) + cap;
+  if (g_mem_cap && g_mem_taken > g_mem_cap)
+    w_over_memory(sizeof(Chunk) + cap);
+
   Chunk *c = (Chunk *)malloc(sizeof(Chunk) + cap);
   if (!c)
     w_fail("out of memory");
   c->cap = cap;
+#ifdef WEAVE_TALLY
+  w_tally_chunk(sizeof(Chunk) + cap);
+#endif
   return c;
 }
 
@@ -133,9 +184,10 @@ void *w_alloc_slow(size_t bytes) {
 // w_free takes a block back. The caller is asserting that nothing else can
 // reach it — every call site is somewhere the runtime has just replaced a block
 // with another one and dropped the only pointer to it.
-void w_free(void *p, size_t bytes) {
+void w_free_impl(void *p, size_t bytes) {
   if (!p)
     return;
+  g_frees++;
   bytes = (bytes + 15) & ~(size_t)15;
   if (bytes == 0)
     return;
@@ -150,6 +202,61 @@ void w_free(void *p, size_t bytes) {
     return; // more distinct large sizes than bins: keep the old behaviour
   *(void **)p = b->head;
   b->head = p;
+}
+
+// ------------------------------------------------------------------ regions
+//
+// A backtracking search is the one shape no ownership analysis will ever help.
+// It uses the collection it was handed once *per option*, not once — the old
+// value has to survive for the next branch — so every branch it tries copies,
+// and every copy is dead the moment the branch is abandoned. Advent of Code
+// 2025 day 10 held 296 MB at exit and had freed none of it: 1.1 million copied
+// rows, one per node of a search whose answer is a single number.
+//
+// What a search wants is not to free those one at a time but to forget them all
+// at once. The arena is a bump pointer, so it can: mark where it has got to,
+// let a turn of the loop allocate whatever it likes, and put the pointer back.
+//
+// The whole safety of it is one condition — nothing allocated inside the region
+// may be reachable after it — and that is a question about the loop, not about
+// the arena. See regions.go in the compiler for what it takes to answer yes.
+
+WMark w_mark(void) {
+  WMark m;
+  m.chunk = g_chunk;
+  m.bump = w_bump;
+  m.bump_end = w_bump_end;
+  m.serial = g_serial;
+  m.frees = g_frees;
+  return m;
+}
+
+void w_release(WMark m) {
+  // Every chunk taken since the mark goes back, wherever it sits in the list:
+  // a block too big for a chunk gets one of its own spliced in behind the
+  // current one, so position says nothing about age and the serial does.
+  Chunk **link = &g_chunk;
+  while (*link) {
+    Chunk *c = *link;
+    if (c->serial > m.serial) {
+      *link = c->prev;
+      free(c);
+      continue;
+    }
+    link = &c->prev;
+  }
+  g_chunk = m.chunk;
+  w_bump = m.bump;
+  w_bump_end = m.bump_end;
+
+  // A free list holding a block inside the region would hand out storage that
+  // has just been forgotten, and hand it out twice. Only worth emptying when
+  // something was actually freed while the region was open.
+  if (g_frees != m.frees) {
+    memset(w_small, 0, sizeof(w_small));
+    memset(g_large, 0, sizeof(g_large));
+    g_frees = m.frees;
+  }
 }
 
 _Noreturn void w_fail(const char *msg) {
@@ -202,11 +309,82 @@ Value w_thread(Value *items, size_t len) {
   t->obj.rc = W_SHARED;
   t->obj.kind = W_THREAD;
   t->len = len;
-  t->items = items;
+  t->elems = items;
+  t->raw = NULL;
   Value v;
   v.tag = W_THREAD;
   v.obj = &t->obj;
   return v;
+}
+
+Value w_thread_packed(int64_t *raw, size_t len, uint32_t elem) {
+  WThread *t = (WThread *)w_alloc(sizeof(WThread));
+  t->obj.rc = W_SHARED;
+  t->obj.kind = elem;
+  t->len = len;
+  t->elems = NULL;
+  t->raw = raw;
+  Value v;
+  v.tag = W_THREAD;
+  v.obj = &t->obj;
+  return v;
+}
+
+Value w_thread_packed_fit(int64_t *raw, size_t len, size_t cap, uint32_t elem) {
+  // Values are sixteen bytes and payloads are eight, which is the one way this
+  // is not w_thread_fit. A tail that starts on an odd element does not start on
+  // a boundary the allocator knows about: it rounds a free up to sixteen, so
+  // handing back `cap - len` payloads gives away eight bytes that are still the
+  // Thread's, and the next thirty-two byte request is handed a block sitting on
+  // top of the elements. So the kept part is rounded up to a pair and the tail
+  // starts there. The rounding also makes the block exactly the size the frees
+  // in thr_boxed and w_thread_release ask for it back at.
+  size_t keep = (len + 1) & ~(size_t)1;
+  if (cap > keep) {
+#ifdef WEAVE_TALLY
+    w_tally_shrink(raw, sizeof(int64_t) * cap, sizeof(int64_t) * keep);
+    w_free_impl(raw + keep, sizeof(int64_t) * (cap - keep));
+#else
+    w_free(raw + keep, sizeof(int64_t) * (cap - keep));
+#endif
+  }
+  return w_thread_packed(raw, len, elem);
+}
+
+// thr_boxed gives a bulk verb the array of Values it wants.
+//
+// A packed Thread is unpacked in place rather than copied out, so the cost is
+// paid once however many verbs ask: the widened array replaces the payloads,
+// and the Thread is an ordinary one from then on.
+//
+// The payloads are not handed back, and that is deliberate. `take` and `drop`
+// give out windows on them, so a Thread that is unpacked may not be the only
+// one pointing at what it was storing — and there is nothing in the header that
+// would say. Freeing them would put a block that is still being read on a free
+// list. Half the width of the array that replaced them, left in the arena, is
+// the price of not needing to know.
+Value *thr_boxed(WThread *t) {
+  if (t->elems != NULL)
+    return t->elems;
+  size_t n = t->len;
+  Value *out = (Value *)w_alloc(sizeof(Value) * (n ? n : 1));
+  Value v;
+  v.tag = t->obj.kind & W_THR_TAG;
+  v.aux = 0;
+  for (size_t i = 0; i < n; i++) {
+    v.earth = t->raw[i];
+    out[i] = v;
+  }
+  t->raw = NULL;
+  t->obj.kind = W_THREAD;
+  t->elems = out;
+  return out;
+}
+
+Value thr_window(WThread *t, size_t at, size_t len) {
+  if (t->elems != NULL)
+    return w_thread(t->elems + at, len);
+  return w_thread_packed(t->raw + at, len, (t->obj.kind & W_THR_TAG) | W_THR_BORROWED);
 }
 
 Value w_thread_copy(const Value *items, size_t len) {
@@ -222,24 +400,53 @@ Value w_thread_copy(const Value *items, size_t len) {
 // against a source a `sift` then thinned out, ends up holding rather more than
 // the Thread needs; the tail is a block like any other, and giving it back at
 // its true size is what lets the free lists match it to a later request.
+//
+// This is the one place that frees part of a block rather than all of it, which
+// is why the tally build needs telling: the tail's address is not something it
+// ever recorded, so the free goes straight to the allocator and the shrink is
+// reported against the block the tail came out of.
 Value w_thread_fit(Value *items, size_t len, size_t cap) {
-  if (cap > len)
+  if (cap > len) {
+#ifdef WEAVE_TALLY
+    w_tally_shrink(items, sizeof(Value) * cap, sizeof(Value) * len);
+    w_free_impl(items + len, sizeof(Value) * (cap - len));
+#else
     w_free(items + len, sizeof(Value) * (cap - len));
+#endif
+  }
   return w_thread(items, len);
 }
 
-Value w_thread_empty(void) { return w_thread(NULL, 0); }
+// The empty Thread is one object for the whole program. A Thread of no
+// elements has nothing to distinguish one from another, and `else []` is how
+// every program says "nothing was there" — Advent of Code 2025 day 8 built six
+// million of them, one per element it read out of a Thread of Threads, for 183
+// MB of headers holding nothing.
+//
+// It is never owned, so an update to it copies like any other shared
+// collection, and w_thread_release knows to leave it alone.
+static WThread g_empty = {{W_SHARED, W_THREAD}, 0, NULL, NULL};
+
+Value w_thread_empty(void) {
+  Value v;
+  v.tag = W_THREAD;
+  v.aux = 0;
+  v.obj = &g_empty.obj;
+  return v;
+}
 
 // w_thread_release hands a Thread's storage back to the allocator. Only
 // generated code calls it, and only where the compiler has proved the Thread
 // dies with the call that built it — see internal/codegen/escape.go. The
 // elements are not touched: whatever they point at may well outlive this.
 void w_thread_release(Value t) {
-  if (t.tag != W_THREAD || !t.obj)
+  if (t.tag != W_THREAD || !t.obj || t.obj == &g_empty.obj)
     return;
   WThread *th = (WThread *)t.obj;
-  if (th->items)
-    w_free(th->items, sizeof(Value) * th->len);
+  if (th->elems)
+    w_free(th->elems, sizeof(Value) * th->len);
+  else if (th->raw && th->len && !(th->obj.kind & W_THR_BORROWED))
+    w_free(th->raw, sizeof(int64_t) * th->len);
   w_free(th, sizeof(WThread));
 }
 
@@ -291,6 +498,18 @@ Value *w_regrow(Value *items, size_t n, size_t cap) {
     // n is the old capacity as well as the length — the buffer is regrown only
     // when it is full — and the fused loop that owns it has no other pointer.
     w_free(items, sizeof(Value) * n);
+  }
+  return bigger;
+}
+
+// w_regrow_packed is w_regrow for a buffer of payloads. The old capacity is
+// even wherever this is used — a doubling buffer that started at sixteen — so
+// the free asks for exactly the block that was taken.
+int64_t *w_regrow_packed(int64_t *raw, size_t n, size_t cap) {
+  int64_t *bigger = (int64_t *)w_alloc(sizeof(int64_t) * (cap ? cap : 1));
+  if (n) {
+    memcpy(bigger, raw, sizeof(int64_t) * n);
+    w_free(raw, sizeof(int64_t) * n);
   }
   return bigger;
 }
@@ -356,12 +575,31 @@ void w_closure_env(Value v, const Value *env, int nenv) {
   c->nenv = nenv;
 }
 
+// The slots a saturating application can keep on the C stack. Sixteen covers
+// the environment and the arguments of anything a program actually writes;
+// past it the heap path below still works.
+#define W_APPLY_SLOTS 16
+
 // w_apply supplies one argument, running the function once it is saturated.
 // A partially applied closure is copied so the original stays reusable.
+//
+// Unless this argument is the last one. Then nothing has to outlive the call:
+// the slots go on the C stack and the closure is not copied at all. That is the
+// common shape by a long way — a predicate given its captured argument and then
+// called once per element, `knots g | sift (reachable g)` — and it used to cost
+// two allocations *per element*, which was 87 MB of Advent of Code 2025 day 4's
+// 105.
 Value w_apply(Value f, Value arg) {
   if (f.tag != W_CLOSURE)
     w_fail("tried to call something that is not a function");
   WClosure *c = (WClosure *)f.obj;
+
+  if (c->nargs + 1 == c->arity && c->nenv + c->arity <= W_APPLY_SLOTS) {
+    Value slots[W_APPLY_SLOTS];
+    memcpy(slots, c->slots, sizeof(Value) * (size_t)(c->nenv + c->nargs));
+    slots[c->nenv + c->nargs] = arg;
+    return c->fn(slots, slots + c->nenv);
+  }
 
   WClosure *n = (WClosure *)w_alloc(sizeof(WClosure));
   *n = *c;
@@ -432,6 +670,22 @@ int w_compare(Value a, Value b) {
       return 0;
     return cmp_i64((int64_t)w_web_size(a), (int64_t)w_web_size(b)) ? cmp_i64((int64_t)w_web_size(a), (int64_t)w_web_size(b)) : 1;
   }
+  case W_PATTERN: {
+    // Reading order, which is the order `cells` and `knots` walk, so a Pattern
+    // sorts the way the text it was read from sorts. Shape breaks a tie only
+    // where one grid runs out, and rows before columns because a grid one row
+    // shorter is the smaller thing however wide it is.
+    WPattern *x = (WPattern *)a.obj, *y = (WPattern *)b.obj;
+    size_t xn = x->rows * x->cols, yn = y->rows * y->cols;
+    size_t n = xn < yn ? xn : yn;
+    for (size_t i = 0; i < n; i++) {
+      int r = w_compare(x->cells[i], y->cells[i]);
+      if (r)
+        return r;
+    }
+    int r = cmp_i64((int64_t)x->rows, (int64_t)y->rows);
+    return r ? r : cmp_i64((int64_t)x->cols, (int64_t)y->cols);
+  }
   case W_TAVEREN:
     return cmp_i64((int64_t)w_taveren_size(a), (int64_t)w_taveren_size(b));
   case W_DATA: {
@@ -450,11 +704,14 @@ int w_compare(Value a, Value b) {
   case W_TWINE: {
     size_t alen = a.tag == W_THREAD ? w_thread_len(a) : ((WTwine *)a.obj)->len;
     size_t blen = b.tag == W_THREAD ? w_thread_len(b) : ((WTwine *)b.obj)->len;
-    Value *ai = a.tag == W_THREAD ? ((WThread *)a.obj)->items : ((WTwine *)a.obj)->items;
-    Value *bi = b.tag == W_THREAD ? ((WThread *)b.obj)->items : ((WTwine *)b.obj)->items;
     size_t n = alen < blen ? alen : blen;
+    // Element at a time rather than array at a time, so that comparing a
+    // packed Thread does not unpack it: an ordering is a question about the
+    // elements and has no business changing how they are stored.
     for (size_t i = 0; i < n; i++) {
-      int r = w_compare(ai[i], bi[i]);
+      Value x = a.tag == W_THREAD ? w_thread_at(a, i) : ((WTwine *)a.obj)->items[i];
+      Value y = b.tag == W_THREAD ? w_thread_at(b, i) : ((WTwine *)b.obj)->items[i];
+      int r = w_compare(x, y);
       if (r)
         return r;
     }
@@ -536,13 +793,63 @@ static bool reads_as_application(Value v) {
 
 static void render(SBuf *b, Value v);
 
-// render_nested renders a value where another value follows it, bracketing it
-// if it would otherwise run into its neighbour.
+// quoted writes text the way it was written in the source: in double quotes,
+// with the escapes the lexer accepts put back.
+static void quoted(SBuf *b, Value v) {
+  WAir *a = air_of(v);
+  sb_char(b, '"');
+  for (size_t i = 0; i < a->len; i++) {
+    char c = a->bytes[i];
+    switch (c) {
+    case '"':
+      sb_cstr(b, "\\\"");
+      break;
+    case '\\':
+      sb_cstr(b, "\\\\");
+      break;
+    case '\n':
+      sb_cstr(b, "\\n");
+      break;
+    case '\r':
+      sb_cstr(b, "\\r");
+      break;
+    case '\t':
+      sb_cstr(b, "\\t");
+      break;
+    case '\0':
+      sb_cstr(b, "\\0");
+      break;
+    default:
+      sb_char(b, c);
+    }
+  }
+  sb_char(b, '"');
+}
+
+// render_item renders a value inside a collection, where text is quoted.
+//
+// Text is quoted. Without it `["a b", "c"]` and `["a", "b", "c"]` both come out
+// as `[a b c]`, and there is no reading that recovers which one it was. At the
+// top level the text *is* the answer, so it stays bare there — a program that
+// prints a line wants the line, not the line in quotes.
+//
+// render_nested is that plus bracketing, for the positions where values are
+// separated by nothing but a space: without it `[knot 1 2, knot 3 4]` comes
+// back as `knot 1 2 knot 3 4`. A comma or a ` : ` keeps neighbours apart on its
+// own, so a Twine and a Web quote without bracketing.
+static void render_item(SBuf *b, Value v) {
+  if (v.tag == W_AIR) {
+    quoted(b, v);
+    return;
+  }
+  render(b, v);
+}
+
 static void render_nested(SBuf *b, Value v) {
-  bool wrap = reads_as_application(v);
+  bool wrap = v.tag != W_AIR && reads_as_application(v);
   if (wrap)
     sb_char(b, '(');
-  render(b, v);
+  render_item(b, v);
   if (wrap)
     sb_char(b, ')');
 }
@@ -657,7 +964,7 @@ static void render(SBuf *b, Value v) {
     for (size_t i = 0; i < t->len; i++) {
       if (i)
         sb_cstr(b, ", ");
-      render(b, t->items[i]);
+      render_item(b, t->items[i]);
     }
     sb_char(b, ')');
     break;
@@ -668,7 +975,7 @@ static void render(SBuf *b, Value v) {
     for (size_t i = 0; i < t->len; i++) {
       if (i)
         sb_char(b, ' ');
-      render_nested(b, t->items[i]);
+      render_nested(b, thr_at(t, i));
     }
     sb_char(b, ']');
     break;
@@ -689,9 +996,9 @@ static void render(SBuf *b, Value v) {
     for (size_t i = 0; i < t->len; i++) {
       if (i)
         sb_cstr(b, "  ");
-      render(b, w_twine_at(t->items[i], 0));
+      render_item(b, w_twine_at(thr_at(t, i), 0));
       sb_cstr(b, " : ");
-      render(b, w_twine_at(t->items[i], 1));
+      render_item(b, w_twine_at(thr_at(t, i), 1));
     }
     sb_char(b, '}');
     break;
@@ -703,7 +1010,7 @@ static void render(SBuf *b, Value v) {
     for (size_t i = 0; i < t->len; i++) {
       if (i)
         sb_char(b, ' ');
-      render_nested(b, t->items[i]);
+      render_nested(b, thr_at(t, i));
     }
     sb_char(b, '}');
     break;
@@ -712,6 +1019,19 @@ static void render(SBuf *b, Value v) {
     char tmp[48];
     sb_put(b, tmp,
            (size_t)snprintf(tmp, sizeof tmp, "<taveren %zu>", w_taveren_size(v)));
+    break;
+  }
+  case W_LINK: {
+    // A Link is its circles: what it holds is who is joined to whom, and a
+    // count of nodes would say nothing about that.
+    Value cs = wp_clumped(v);
+    size_t n = w_thread_len(cs);
+    sb_cstr(b, "<link");
+    for (size_t i = 0; i < n; i++) {
+      sb_char(b, ' ');
+      render_nested(b, w_thread_at(cs, i));
+    }
+    sb_char(b, '>');
     break;
   }
   default:
@@ -741,9 +1061,16 @@ void w_show(Value v) {
 // value instead of only the output expression, so an editor can show each line's
 // result beside it. One record per line, tab separated, with the value's own
 // newlines and tabs escaped so a record is always one line.
+//
+// Every record is flushed as it is written. Tracing is run under a time limit —
+// a definition that will not finish is not allowed to keep the rest of the file
+// quiet — and a program that is killed part way through never returns from
+// printf's buffer. Flushing means the lines that did report have already left
+// the building when the axe falls.
 
 void w_trace_text(int64_t line, const char *name, const char *text) {
   printf("%lld\t%s\t%s\n", (long long)line, name, text);
+  fflush(stdout);
 }
 
 // Longer than this is not something an editor can show at the end of a line.
@@ -774,13 +1101,158 @@ void w_trace(int64_t line, const char *name, Value v) {
     fputs("...", stdout);
   }
   putchar('\n');
+  fflush(stdout);
+}
+
+// --------------------------------------------------------- watching a call
+//
+// Ghost text answers "what does this line hold", and a line inside a function
+// body does not hold one thing — it holds a different thing on every call. So
+// the inside of a function is the one place in a program with no ghost text,
+// and it is where a bug is most likely to be.
+//
+// `weave trace -watch f` records what f's names held on each call instead. The
+// records go out on the same stream in the same shape as the others, marked
+// with a leading `@` so that anything reading the by-line records skips them:
+//
+//	@LINE<TAB>CALL<TAB>NAME<TAB>VALUE
+//
+// A recursion that is being debugged runs millions of times and a window can
+// show a few dozen, so what is kept is bounded at both ends: the first calls
+// are written as they happen, and the last are held in a ring and written when
+// the program stops. Between them is a count, because "it ran 27 763 113 times"
+// is itself an answer. The head is where a base case that never fires shows up
+// and the tail is where a loop that will not settle does, and neither is in the
+// middle.
+
+#define W_CALL_HEAD 24
+#define W_CALL_TAIL 24
+
+typedef struct {
+  int64_t call;  // which call these belong to, or 0 for an unused slot
+  char **texts;  // the rendered records, in the order they were made
+  size_t n, cap;
+} CallSlot;
+
+static CallSlot g_call_ring[W_CALL_TAIL];
+static int64_t g_call_no;
+
+// w_watch_enter starts a call and hands back its number. The number is the
+// caller's to keep, in a local, because a function that recurses is inside
+// several calls at once: a global counter would file what the outermost call
+// answered under whatever number the innermost had reached.
+//
+// The slot this call will use is emptied now rather than when it is
+// overwritten, so the ring holds whole calls and never half of one.
+int64_t w_watch_enter(void) {
+  g_call_no++;
+  if (g_call_no > W_CALL_HEAD) {
+    CallSlot *slot = &g_call_ring[g_call_no % W_CALL_TAIL];
+    for (size_t i = 0; i < slot->n; i++)
+      free(slot->texts[i]);
+    slot->n = 0;
+    slot->call = g_call_no;
+  }
+  return g_call_no;
+}
+
+// call_record renders one record. The value's own newlines and tabs are
+// escaped, exactly as w_trace escapes them, so a record is always one line.
+static char *call_record(int64_t call, int64_t line, const char *name, Value v) {
+  size_t n = 0;
+  char *s = w_render(v, &n);
+  size_t shown = n < W_TRACE_MAX ? n : W_TRACE_MAX;
+
+  // Two bytes per shown byte covers every escape, plus the header and the
+  // ellipsis and the newline.
+  size_t cap = shown * 2 + strlen(name) + 64;
+  char *out = (char *)malloc(cap);
+  if (!out)
+    return NULL;
+  int head = snprintf(out, cap, "@%lld\t%lld\t%s\t", (long long)line,
+                      (long long)call, name);
+  size_t w = (size_t)head;
+  for (size_t i = 0; i < shown; i++) {
+    switch (s[i]) {
+    case '\n':
+      out[w++] = '\\';
+      out[w++] = 'n';
+      break;
+    case '\t':
+      out[w++] = '\\';
+      out[w++] = 't';
+      break;
+    case '\\':
+      out[w++] = '\\';
+      out[w++] = '\\';
+      break;
+    default:
+      out[w++] = s[i];
+    }
+  }
+  if (shown < n) {
+    memcpy(out + w, "...", 3);
+    w += 3;
+  }
+  out[w] = '\0';
+  return out;
+}
+
+void w_watch(int64_t call, int64_t line, const char *name, Value v) {
+  if (call <= W_CALL_HEAD) {
+    // Written as it happens, and flushed, so a run that is cut short by a
+    // limit still shows how the first calls went.
+    char *rec = call_record(call, line, name, v);
+    if (!rec)
+      return;
+    puts(rec);
+    fflush(stdout);
+    free(rec);
+    return;
+  }
+  CallSlot *slot = &g_call_ring[call % W_CALL_TAIL];
+  // A recursion deep enough to wrap the ring while an outer call is still
+  // running has had that call's slot taken by an inner one. What it went on to
+  // answer is dropped rather than filed under somebody else's number.
+  if (slot->call != call)
+    return;
+  if (slot->n == slot->cap) {
+    size_t cap = slot->cap ? slot->cap * 2 : 8;
+    char **grown = (char **)realloc(slot->texts, sizeof(char *) * cap);
+    if (!grown)
+      return;
+    slot->texts = grown;
+    slot->cap = cap;
+  }
+  char *rec = call_record(call, line, name, v);
+  if (rec)
+    slot->texts[slot->n++] = rec;
+}
+
+// w_watch_flush writes the count and then the calls the ring held, in order.
+// It runs when the program stops of its own accord; a run cut short by a limit
+// has already written its head, which is the half that matters most.
+void w_watch_flush(void) {
+  if (g_call_no == 0)
+    return;
+  printf("@0\t0\tcalls\t%lld\n", (long long)g_call_no);
+  for (int64_t call = g_call_no - W_CALL_TAIL + 1; call <= g_call_no; call++) {
+    if (call <= W_CALL_HEAD)
+      continue;
+    CallSlot *slot = &g_call_ring[call % W_CALL_TAIL];
+    if (slot->call != call)
+      continue;
+    for (size_t i = 0; i < slot->n; i++)
+      puts(slot->texts[i]);
+  }
+  fflush(stdout);
 }
 
 void w_print_result(Value v) {
   if (v.tag == W_THREAD) {
     WThread *t = (WThread *)v.obj;
     for (size_t i = 0; i < t->len; i++) {
-      w_show(t->items[i]);
+      w_show(thr_at(t, i));
       putchar('\n');
     }
     return;

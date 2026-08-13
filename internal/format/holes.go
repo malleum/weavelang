@@ -72,20 +72,20 @@ func holeCandidate(e *ast.Lambda) (*ast.Lambda, func()) {
 		names[first.Name] = ast.HoleName
 		params[0] = &ast.PVar{Name: ast.HoleName, P: first.P}
 	case *ast.PTwine:
-		if len(first.Elems) != 2 {
+		// Each width has its own words, and nothing names a component of a
+		// wider Twine than three: that one stays a pattern.
+		want := ast.PartNames(len(first.Elems))
+		if want == nil {
 			return nil, nil
 		}
-		a, ok := first.Elems[0].(*ast.PVar)
-		if !ok {
-			return nil, nil
+		for i, el := range first.Elems {
+			v, ok := el.(*ast.PVar)
+			if !ok {
+				return nil, nil
+			}
+			names[v.Name] = want[i]
 		}
-		b, ok := first.Elems[1].(*ast.PVar)
-		if !ok {
-			return nil, nil
-		}
-		names[a.Name] = ast.FormerName
-		names[b.Name] = ast.LatterName
-		params[0] = pairPattern(first.P)
+		params[0] = partsPattern(first.P, len(first.Elems))
 	default:
 		return nil, nil
 	}
@@ -117,20 +117,21 @@ func holeCandidate(e *ast.Lambda) (*ast.Lambda, func()) {
 	return &ast.Lambda{Params: params, Body: e.Body, P: e.P}, undo
 }
 
-// pairPattern is the `(former, latter)` a lambda over a Twine becomes.
-func pairPattern(pos token.Pos) ast.Pattern {
-	return &ast.PTwine{
-		Elems: []ast.Pattern{
-			&ast.PVar{Name: ast.FormerName, P: pos},
-			&ast.PVar{Name: ast.LatterName, P: pos},
-		},
-		P: pos,
+// partsPattern is the `(former, latter)` or `(fore, mid, aft)` a lambda over a
+// Twine becomes.
+func partsPattern(pos token.Pos, n int) ast.Pattern {
+	names := ast.PartNames(n)
+	elems := make([]ast.Pattern, len(names))
+	for i, name := range names {
+		elems[i] = &ast.PVar{Name: name, P: pos}
 	}
+	return &ast.PTwine{Elems: elems, P: pos}
 }
 
 func isHoleWord(name string) bool {
 	switch name {
-	case ast.HoleName, ast.PartnerName, ast.FormerName, ast.LatterName:
+	case ast.HoleName, ast.PartnerName, ast.FormerName, ast.LatterName,
+		ast.ForeName, ast.MidName, ast.AftName:
 		return true
 	}
 	return false

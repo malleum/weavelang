@@ -73,9 +73,12 @@ var freshThread = map[string]bool{
 	"rev": true, "weld": true, "plait": true,
 	"sort": true, "sortby": true, "flat": true, "uniq": true,
 	"lines": true, "words": true, "fires": true, "split": true, "splitOn": true,
-	"earths": true, "waters": true, "sparks": true, "digits": true,
+	"earths": true, "spans": true, "waters": true, "sparks": true, "digits": true,
 	"keys": true, "vals": true, "items": true, "members": true,
 	"chunks": true, "windows": true, "perms": true, "pairs": true,
+	"clumps": true, "couples": true, "squeeze": true, "mesh": true,
+	"carve": true, "clumped": true, "sites": true,
+	"under": true, "copies": true,
 	"cells": true, "rows": true, "cols": true, "knots": true,
 	"nb4": true, "nb8": true, "around4": true, "around8": true,
 	"top": true, "bot": true, "cellwise": true, "mapvals": true,
@@ -104,8 +107,10 @@ func (g *gen) releasable(cl *ast.Clause) map[*ast.Bind]bool {
 
 	out := map[*ast.Bind]bool{}
 	for i, bind := range binds {
-		if len(bind.Params) > 0 {
-			continue // a local function, not a value
+		if len(bind.Params) > 0 || bind.Pat != nil {
+			// A local function, or a binding that takes its value apart and so
+			// has several names rather than one to trace.
+			continue
 		}
 		bt, known := g.info.Types[bind.Value]
 		if !known {

@@ -18,10 +18,10 @@ weave verbs Knot               # what works on coordinates?
 
 ---
 
-## 1. A program is some definitions and one expression
+## 1. A program is some definitions and some answers
 
-The last bare expression in the file is what the program prints. Everything
-above it is named for your convenience.
+Every bare expression in the file is printed, in the order it was written.
+Anything bound to a name stays quiet.
 
 ```weave
 answer is 42
@@ -33,8 +33,23 @@ answer
 42
 ```
 
-There is no `main`, no `print`, no `return`. If you want to see something, make
-it the last line.
+There is no `main`, no `print`, no `return`. If you want to see something,
+leave it bare.
+
+That is why an Advent of Code file is usually one binding for the input and two
+bare chains for the two parts:
+
+```weave
+digits is [3 1 4 1 5]
+
+digits through sum
+digits through prod
+```
+
+```
+14
+60
+```
 
 Definitions can come in any order — this is the same program:
 
@@ -224,7 +239,8 @@ are data-last too, so `sift (gt 3)` means "keep the ones over 3".
 Thread. You will rarely need it, because `sum`, `prod`, `len`, `count`, `most`
 and friends already exist.
 
-Building a range:
+Building a range. `span` names both ends and includes both, because that is
+what an input written `11-22` means:
 
 ```weave
 span 1 5
@@ -238,18 +254,41 @@ span 1 5
 5
 ```
 
-There is no positional indexing verb. To get the *n*th element, drop the ones
-before it:
+When what you want is the *places* of n things rather than a range between two
+numbers, `under n` is zero up to but not including n — and `copies n x` is the
+same value that many times, which is `repeat` for a Thread rather than for text:
 
 ```weave
-span 10 20 | drop 3 | first
+[air (under 4), air (copies 3 0)] | join " "
+```
+```
+[0 1 2 3] [0 0 0]
+```
+
+`nth` gets the element at a position, and `idx` says where a value is:
+
+```weave
+(nth 3 (span 10 20), idx 13 (span 10 20))
 ```
 
 ```
-Held 13
+(Held 13, Held 3)
 ```
 
-That `Held` is the next section.
+Asking *where* rather than *what* has both halves throughout: `idx` is the
+first position a value lies at and `idxs` every one, `seekidx` is the first
+position passing a test and `siftidx` every one, and `highidx`/`lowidx` say
+where `high` and `low` found what they found.
+
+```weave
+("..#.#..#" | fires | idxs '#', siftidx even [1 2 3 4] | air)
+```
+
+```
+([2 4 7], "[1 3]")
+```
+
+That `Held` above is the next section.
 
 ---
 
@@ -285,6 +324,19 @@ a default:
 0
 ```
 
+`holds` asks whether there is a value there without taking it out. A `Weaving`
+— which is a `Hold` that says *why* it is empty — has the same question in
+`woven`:
+
+```weave
+[holds (Held 1), holds ([] | first), woven (harvest earth ["1", "2"]), woven (harvest earth ["x"])]
+  | bend air
+  | join " "
+```
+```
+Light Shadow Light Shadow
+```
+
 And when you want to do different things in the two cases, you match — which is
 the next section.
 
@@ -308,6 +360,32 @@ zero something nothing
 
 `ward` takes the value, then one indented arm per case: the pattern, `:`, the
 result.
+
+When the arms are short, bracket them on the `ward` line instead. It is the
+same ward:
+
+```weave
+score c is ward c (Light : 1) (Shadow : 0)
+
+[score Light, score Shadow] | air
+```
+
+```
+[1 0]
+```
+
+The bracketed form is also the only one that fits *inside* an expression — a
+block owns its indentation, and an argument has nowhere to put one:
+
+```weave
+[1 2 3 4] | bend (n gives ward (even n) (Light : mul n 10) (Shadow : n)) | sum
+```
+
+```
+64
+```
+
+`weave fmt` keeps whichever you wrote, for as long as it fits on the line.
 
 **The compiler checks you handled everything.** Delete the `Stilled` line from
 that program and you get:
@@ -407,7 +485,7 @@ Light
 
 ---
 
-## 9. `_`, for the argument you did not name
+## 9. The hole words, for the arguments you did not name
 
 Writing `(x : mod x 2 | eq 0)` gets tedious. `_` stands for the argument:
 
@@ -461,18 +539,20 @@ two-argument function needs no parameter names either:
 `this` is the first argument and `that` the second, whichever order they are
 written in — `braid (sub that this) 0` is a different fold, not an error.
 
-`former` and `latter` are the two halves of the first argument. Writing either
-says the value arriving is a two-part Twine the group wants opened:
+`fore` and `aft` are the first and last components of the first argument, and
+`mid` is the one between when there are three. Writing any of them says the
+value arriving is a Twine the group wants taken apart — into three if a `mid`
+is among them, and into two otherwise:
 
 ```weave
-[(1, 5), (3, 2), (4, 4)] as add former latter | sum
+[(1, 5), (3, 2), (4, 4)] as add fore aft | sum
 ```
 ```
 19
 ```
 
-Without a `former` or `latter`, the argument stays whole, pair or not. All four
-combine: `(sub that former)` takes a pair and a second argument and subtracts
+Without one of them, the argument stays whole, Twine or not. All four
+combine: `(sub that fore)` takes a pair and a second argument and subtracts
 one from the other.
 
 One thing to watch: because the *brackets* bind it, nesting one call inside
@@ -500,6 +580,16 @@ Reading a value out of text is one verb per Power, named for it: `earth`,
 `water`, `fire`. Each returns a `Hold`, because reading
 can fail.
 
+A number that is not written in base ten is `unbase`, and `base` writes one
+back — any base from two to thirty-six, either case for the letters:
+
+```weave
+[base 2 11, base 16 255, air (unbase 2 "1011" | otherwise 0)] | join " "
+```
+```
+1011 ff 11
+```
+
 When the input is a mess of numbers with punctuation between them, `earths` pulls
 them all out and handles minus signs:
 
@@ -513,6 +603,18 @@ them all out and handles minus signs:
 7
 ```
 
+`waters` is the same sweep for the other Power, and a run of digits with no
+point still counts — this is reading input, not source:
+
+```weave
+"x=1.5, y=-2" | waters
+```
+
+```
+1.5
+-2.0
+```
+
 When the *shape* of the line is the point rather than the numbers in it,
 `delve` says the shape and hands back the runs you marked with `{}`:
 
@@ -521,7 +623,7 @@ When the *shape* of the line is the point rather than the numbers in it,
 ```
 
 ```
-Held [11 3 blue, 4 red]
+Held ["11" "3 blue, 4 red"]
 ```
 
 Everything that is not `{}` has to match exactly, a run stops at the first place
@@ -543,6 +645,39 @@ the natural way to read a file where only some lines are interesting:
 
 There is no regular expression engine, and there is not going to be one.
 Between `earths` and `delve`, five years of Advent of Code has not wanted it.
+
+When the numbers come as ranges, `earths` is the wrong verb and has to be: it
+reads a dash before a digit as a sign, because `x=-5` is one number. `spans`
+reads the other reading — every `11-22` in the text, as a Twine:
+
+```weave
+"11-22, 95-115" | spans | bend air | join " "
+```
+```
+(11, 22) (95, 115)
+```
+
+Ranges usually overlap, and their widths mean nothing until they do not, so
+`mesh` rolls a Thread of them into the fewest that cover the same ground. Ranges
+that merely touch are joined: these are Earths, and 1-3 and 4-6 leave nothing
+between them.
+
+```weave
+"1-3, 2-5, 9-9" | spans | mesh | bend width | sum
+```
+```
+6
+```
+
+And when the punctuation is all you want gone, `carve` is `words` with the
+separators named: the runs of text lying between any of these characters:
+
+```weave
+"Machine [1,2] (34)" | carve "[](){}, " | join "|"
+```
+```
+Machine|1|2|34
+```
 
 Other things you will reach for: `words`, `blocks` (split on blank lines),
 `split`, `strip`, `fires`. `split "" text` gives you one piece per character,
@@ -610,6 +745,20 @@ total [x ..rest] is add x (total rest)
 and because a Thread is an array, that is a slice of the same storage, not a
 copy. `[a b ..]` throws the rest away without naming it.
 
+`take`, `drop`, `sever`, `rev`, `turn`, `weld` and `repeat` work on text
+exactly as they work on a Thread — that is the `Ply` Talent, which says a
+value's elements lie in a known order. `len` only asks for `Bulk`, which says there is a size and nothing about
+order, and that is why a `Web` has a length you can ask for and no front you can
+take. On text these count characters rather than bytes, so nothing ever comes
+apart in the middle:
+
+```weave
+[take 3 "naïve", drop 3 "naïve", rev "stressed"] | join " "
+```
+```
+naï ve desserts
+```
+
 A list of fixed-length patterns can never be exhaustive, so it always needs a
 `_`. `[]` with `[x ..rest]` is the one pair that is complete on its own.
 
@@ -653,6 +802,29 @@ have the same key, which is what counting repeats wants:
 1
 ```
 
+Three more that come up whenever a Thread is being cross-referenced rather than
+walked. `couples` is every pair of two elements, each once — the all-pairs loop,
+without the loop. `index` is the Web from a value to where it sits, which is
+what you build the moment you mean to look things up. And `squeeze` turns a
+sparse axis into a dense one: the sorted distinct values, plus a single stand-in
+for each gap between them, so a plane far too large to draw becomes a grid you
+can draw.
+
+```weave
+[ air (couples [1, 2, 3])
+, air (get (index ["a", "b", "c"]) "b" | otherwise 0)
+, air (squeeze [1, 5, 6])
+] | join " "
+```
+```
+[(1, 2) (1, 3) (2, 3)] 1 [1 2 5 6]
+```
+
+`squeeze [1, 5, 6]` keeps 1, 5 and 6, and adds one line — the 2 — standing for
+the whole run between 1 and 5. Whatever happens across that run happens the same
+way at every value in it, so one line does for all of them however wide the gap
+is.
+
 ---
 
 ## 11. Grids
@@ -684,6 +856,51 @@ f
 want: `knots` (every coordinate), `cells` (every value), `around4`/`around8`
 (the neighbouring knots that are in bounds), `nb4`/`nb8` (their values),
 `cellwise` (map over every cell, keeping the shape), `set`.
+
+`weft` weaves rows you already have into a grid. `warp` is the other
+constructor: give it the shape and a function from a knot to what belongs there,
+and it lays the grid out before anything is on it — a board, a mask, a distance
+table:
+
+```weave
+board is warp (k gives pick (eq (row k) (col k)) '\\' '.') 3 3
+
+board | rows | air
+```
+```
+3
+```
+
+`sited` asks `cell` the other way round — where a value is, rather than what is
+at a knot — and `sites` gives every one. Finding where the maze starts is one
+verb rather than a search with a default nobody wants:
+
+```weave
+sheet is "S.#\n.E." | pattern
+
+[air (sited sheet 'E'), air (sites sheet '.')] | join " "
+```
+```
+Held (knot 1 1) [(knot 0 1) (knot 1 0) (knot 1 2)]
+```
+
+When a grid is going to be asked "how much is inside this box" many times over,
+`tallies` is worth asking once. It replaces every cell with the total of the box
+from the top left corner to it, and then `tallied` reads any box back out in a
+single subtraction, however large the box is:
+
+```weave
+g is [[1, 2, 3], [4, 5, 6], [7, 8, 9]] | weft 0
+
+t is tallies g
+
+[tallied t (knot 1 1) (knot 2 2), tallied t (knot 0 0) (knot 2 2)]
+  | bend air
+  | join " "
+```
+```
+28 45
+```
 
 Counting the `#`s that have at least two `#` neighbours:
 
@@ -736,8 +953,20 @@ seen is circle [1 2 3]
 Light Shadow
 ```
 
-`Circle` is a set. `Taveren` is a priority queue, but you often will not need it
-directly — see the next section.
+`Circle` is a set: `union`, `inter` and `diff` combine two, and `covers` asks
+whether one already holds the other.
+
+```weave
+[covers (circle [1, 2, 3]) (circle [1, 3]), covers (circle [1]) (circle [1, 9])]
+  | bend air
+  | join " "
+```
+```
+Light Shadow
+```
+
+`Taveren` is a priority queue, but you often will not need it directly — see the
+next section.
 
 Both are hash array mapped tries, and both get the same in-place treatment as
 grids when threaded through a loop, so building a set of a million things is
@@ -762,6 +991,40 @@ get (dijkstra steps 0) 5 | otherwise (neg 1)
 
 Because it returns the whole map, a second question about the same graph is a
 lookup rather than another search.
+
+`reach` is the same idea with the cost dropped: everywhere you can get to from
+here. `clumps` asks it of every node at once, so a graph falls into the groups
+that can get to one another — regions of a grid, clusters, islands:
+
+```weave
+edges is web [(1, [2]), (2, [1]), (3, []), (4, [5]), (5, [4])]
+
+clumps (v : get edges v | otherwise []) [1, 2, 3, 4, 5] | bend air | join " "
+```
+```
+[1 2] [3] [4 5]
+```
+
+`clumps` answers the *finished* question, once. Some puzzles ask it while the
+joining is still going on — Kruskal's algorithm walks the pairs closest-first
+and watches the circuits form — and that is a `Link`:
+
+```weave
+l is link [1, 2, 3, 4, 5]
+
+joined is bind (bind l 1 2) 4 5
+
+[air (bound joined 1 2), air (bound joined 1 3), air (clumped joined | bend len)]
+  | join " "
+```
+```
+Light Shadow [2 1 2]
+```
+
+`link xs` puts every node alone, `bind` joins two circles, `bound` asks whether
+two are together yet, and `clumped` hands back the circles. Like everything else
+here it is a value: binding leaves the old Link alone, and a Link threaded
+through a loop is updated in place.
 
 For a maze, the step function is "the open neighbours, one step each":
 
@@ -849,8 +1112,8 @@ Held 1024
 ```
 
 Because it never ends, something has to stop it: `take`, `takewhile`, `seek`,
-`first`, `any` or `all`. If nothing does, that is a compile error rather than a
-program that hangs.
+`first`, `any`, `all`, `dupe` or `gentle`. If nothing does, that is a compile
+error rather than a program that hangs.
 
 ```weave
 next n is pick (even n) (div n 2) (add 1 (mul 3 n))
@@ -860,6 +1123,74 @@ flow next 27 | takewhile (neq 1) | len
 
 ```
 111
+```
+
+`cycle xs` is the other endless one: `xs` over and over. It comes up whenever
+the same list of instructions is walked round again.
+
+The one shape neither can say is "keep going until nothing changes", because the
+test for having arrived is about *two* values rather than one. That is `settle`:
+
+```weave
+grow s is replace "ab" "b" s
+
+[settle grow "aaaab", settle (n : pick (gt 100 n) n (add n 1)) 1 | air] | join " "
+```
+```
+b 101
+```
+
+A step function that never settles never returns, exactly as a recursion that
+never bottoms out never returns — if you are not sure yours will, count the
+rounds yourself instead.
+
+The shape those two are really for is "walk on, carrying something, and stop at
+the first repeat". `scan` is a `bend` that carries a running total — one total
+per element, so `sums` is exactly `scan add 0` — and `dupe` is a `seek` with a
+memory:
+
+```weave
+[1, neg 2, 3, 1] | cycle | scan add 0 | dupe
+```
+
+```
+Held (5, 2, 2)
+```
+
+`dupe` answers *where* the repeat was as well as *what* it was, because a
+cycle-detection puzzle usually wants how many steps it took.
+
+`priors` is `scan` with the value it started from kept, so it comes back one
+longer than the Thread it walked. That is the shape a range total wants: the
+total between two positions is one subtraction, and an empty range needs no
+special case.
+
+```weave
+t is priors add 0 [5, 1, 9, 2]
+
+total lo hi is sub (nth hi t | otherwise 0) (nth lo t | otherwise 0)
+
+[total 1 3, total 0 4] | bend air | join " "
+```
+```
+10 17
+```
+
+When the memory has to be something of your own, `gentle` is the general tool.
+It is `braid` that may stop: the step answers `Woven acc` to carry on or
+`Gentled answer` to end the fold there, and `failing` takes that answer back
+out. This counts the starting total too, which `dupe` on its own cannot:
+
+```weave
+[1, neg 2, 3, 1]
+  through cycle
+  through scan add 0
+  through gentle (s n gives pick (member s n) (Gentled n) (Woven (insert s n))) (circle [0])
+  failing 0
+```
+
+```
+2
 ```
 
 ---
@@ -917,6 +1248,30 @@ answer is weave x is 6, y is 7 into mul x y
 
 answer
 ```
+
+A binding can also take its value apart, the way a function's parameters
+already could — locally, and at the top level:
+
+```weave
+(width, height) is (7, 3)
+
+area p is
+  weave (w, h) is p
+  mul w h
+
+[area (width, height), add width height]
+```
+
+```
+21
+10
+```
+
+A bare name is still a name: `weave x is 1` binds `x`, it does not try to match
+anything. It is the bracketed shapes — a Twine, a Thread — and `_` that take a
+value apart. Since there is only the one pattern and nowhere else to go, it has
+to cover every case the value could be; one that might not match is the same
+gentle warning a one-armed `ward` gets.
 
 ---
 
@@ -988,8 +1343,13 @@ frame however long the program loops for.
 
 ## Where to go next
 
-- **`weave verbs`** — the whole vocabulary, searchable by type. `weave verbs
-  Web` when you cannot remember what maps can do.
+- **`weave docs`** — the whole vocabulary as a page on localhost, with search
+  over every name, signature and description at once. It is a reference and not
+  an introduction: every verb there is explained by other verbs and every type
+  by other types, which is no use until you have read this and exactly what you
+  want afterwards.
+- **`weave verbs`** — the same vocabulary at a terminal. `weave verbs Web` when
+  you cannot remember what maps can do.
 - **[verbs.md](verbs.md)** — the same thing as a document.
 - **[../SPEC.md](../SPEC.md)** — the language definition, including how the
   optimisations work and why.
@@ -1001,5 +1361,5 @@ Two habits worth forming early:
 
 1. **Let `weave check` tell you what you missed.** Exhaustiveness errors are the
    language's main contribution to getting an answer right the first time.
-2. **Reach for a verb before writing recursion.** There are 206 of them, and
+2. **Reach for a verb before writing recursion.** There are 233 of them, and
    `weave verbs <type>` finds the one you want faster than writing it does.

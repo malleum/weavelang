@@ -451,3 +451,40 @@ func TestParseTerminatesOnGarbage(t *testing.T) {
 		Parse(src, bag)
 	}
 }
+
+// A binding may take its value apart. A bare name is still a name — `weave x is
+// 1` binds, it does not match — so only the bracketed shapes and `_` count.
+func TestParsesADestructuringBinding(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{"a twine", "f p is\n  weave (a, b) is p\n  a\n", "(weave-pattern (, a b)"},
+		{"a thread", "f p is\n  weave [a, b] is p\n  a\n", "(weave-pattern (thread a b)"},
+		{"a wildcard", "f p is\n  weave _ is p\n  1\n", "(weave-pattern _"},
+		{"inline", "f p is weave (a, b) is p into a\n", "(weave-pattern (, a b)"},
+		{"a plain name is still a name", "f p is\n  weave x is p\n  x\n", "(weave x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bag := diag.New("t.weave", tc.src)
+			file := Parse(tc.src, bag)
+			if !bag.Empty() {
+				t.Fatalf("did not parse:\n%s", bag)
+			}
+			if got := ast.DumpFile(file); !strings.Contains(got, tc.want) {
+				t.Errorf("expected %q in:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+// `channel` declares a function, and a function has a name.
+func TestAChannelStillNeedsAName(t *testing.T) {
+	src := "f p is\n  channel (a, b) is p\n  a\n"
+	bag := diag.New("t.weave", src)
+	Parse(src, bag)
+	if bag.Empty() {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(bag.String(), "expected a name after `channel`") {
+		t.Errorf("got:\n%s", bag)
+	}
+}

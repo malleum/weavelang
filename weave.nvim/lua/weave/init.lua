@@ -17,8 +17,10 @@ local M = {}
 
 local config = require("weave.config")
 local trace = require("weave.trace")
+local calls = require("weave.calls")
 
 M.trace = trace
+M.calls = calls
 M.config = config
 
 --- start_lsp attaches the language server to a buffer.

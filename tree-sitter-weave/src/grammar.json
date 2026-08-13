@@ -67,32 +67,50 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "STRING",
-              "value": "remember"
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "remember"
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                },
+                {
+                  "type": "FIELD",
+                  "name": "name",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  }
+                },
+                {
+                  "type": "FIELD",
+                  "name": "parameters",
+                  "content": {
+                    "type": "REPEAT",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_pattern_atom"
+                    }
+                  }
+                }
+              ]
             },
             {
-              "type": "BLANK"
+              "type": "FIELD",
+              "name": "pattern",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_destructuring"
+              }
             }
           ]
-        },
-        {
-          "type": "FIELD",
-          "name": "name",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
-        },
-        {
-          "type": "FIELD",
-          "name": "parameters",
-          "content": {
-            "type": "REPEAT",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_pattern_atom"
-            }
-          }
         },
         {
           "type": "SYMBOL",
@@ -290,8 +308,13 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "SYMBOL",
-              "name": "ward"
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_ward_block"
+              },
+              "named": true,
+              "value": "ward"
             },
             {
               "type": "SEQ",
@@ -331,23 +354,41 @@
           }
         },
         {
-          "type": "FIELD",
-          "name": "name",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
-        },
-        {
-          "type": "FIELD",
-          "name": "parameters",
-          "content": {
-            "type": "REPEAT",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_pattern_atom"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "name",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  }
+                },
+                {
+                  "type": "FIELD",
+                  "name": "parameters",
+                  "content": {
+                    "type": "REPEAT",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_pattern_atom"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "FIELD",
+              "name": "pattern",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_destructuring"
+              }
             }
-          }
+          ]
         },
         {
           "type": "SYMBOL",
@@ -360,6 +401,23 @@
             "type": "SYMBOL",
             "name": "_body"
           }
+        }
+      ]
+    },
+    "_destructuring": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "twine_pattern"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "thread_pattern"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "wildcard"
         }
       ]
     },
@@ -525,6 +583,15 @@
         {
           "type": "SYMBOL",
           "name": "web"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_ward_inline"
+          },
+          "named": true,
+          "value": "ward"
         }
       ]
     },
@@ -534,10 +601,6 @@
         {
           "type": "STRING",
           "value": "_"
-        },
-        {
-          "type": "STRING",
-          "value": "it"
         },
         {
           "type": "STRING",
@@ -554,6 +617,18 @@
         {
           "type": "STRING",
           "value": "latter"
+        },
+        {
+          "type": "STRING",
+          "value": "fore"
+        },
+        {
+          "type": "STRING",
+          "value": "mid"
+        },
+        {
+          "type": "STRING",
+          "value": "aft"
         }
       ]
     },
@@ -751,7 +826,7 @@
         }
       ]
     },
-    "ward": {
+    "_ward_block": {
       "type": "SEQ",
       "members": [
         {
@@ -780,6 +855,30 @@
         {
           "type": "SYMBOL",
           "name": "_dedent"
+        }
+      ]
+    },
+    "_ward_inline": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "ward"
+        },
+        {
+          "type": "FIELD",
+          "name": "subject",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_application_or_atom"
+          }
+        },
+        {
+          "type": "REPEAT1",
+          "content": {
+            "type": "SYMBOL",
+            "name": "ward_arm_inline"
+          }
         }
       ]
     },
@@ -814,6 +913,48 @@
             "type": "SYMBOL",
             "name": "_body"
           }
+        }
+      ]
+    },
+    "ward_arm_inline": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "FIELD",
+          "name": "pattern",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_pattern"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": ":"
+            },
+            {
+              "type": "STRING",
+              "value": "gives"
+            }
+          ]
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ")"
         }
       ]
     },
@@ -892,23 +1033,41 @@
           ]
         },
         {
-          "type": "FIELD",
-          "name": "name",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
-        },
-        {
-          "type": "FIELD",
-          "name": "parameters",
-          "content": {
-            "type": "REPEAT",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_pattern_atom"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "name",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  }
+                },
+                {
+                  "type": "FIELD",
+                  "name": "parameters",
+                  "content": {
+                    "type": "REPEAT",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_pattern_atom"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "FIELD",
+              "name": "pattern",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_destructuring"
+              }
             }
-          }
+          ]
         },
         {
           "type": "SYMBOL",
@@ -1146,10 +1305,6 @@
         {
           "type": "STRING",
           "value": "_"
-        },
-        {
-          "type": "STRING",
-          "value": "it"
         },
         {
           "type": "STRING",
@@ -1514,6 +1669,9 @@
     [
       "_application_or_atom",
       "application"
+    ],
+    [
+      "_ward_inline"
     ]
   ],
   "precedences": [],

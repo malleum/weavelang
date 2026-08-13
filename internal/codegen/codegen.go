@@ -61,6 +61,7 @@ var builtins = map[string]builtin{
 	"sort": {"wp_sort", 1}, "all": {"wp_all", 2}, "any": {"wp_any", 2},
 	"zipwith": {"wp_zipwith", 3}, "thread": {"wp_thread", 1}, "weld": {"wp_weld", 2}, "mend": {"wp_mend", 3},
 	"sever": {"wp_sever", 2}, "strands": {"wp_strands", 2},
+	"turn": {"wp_turn", 2}, "wrap": {"wp_wrap", 2},
 	"plait": {"wp_plait", 2}, "cull": {"wp_cull", 2}, "bendr": {"wp_bendr", 2}, "siftr": {"wp_siftr", 2},
 	"zipr": {"wp_zipr", 3}, "sums": {"wp_sums", 1}, "prods": {"wp_prods", 1},
 	"cellwise": {"wp_cellwise", 2},
@@ -78,23 +79,31 @@ var builtins = map[string]builtin{
 	"taveren": {"wp_taveren", 1}, "push": {"wp_push", 2}, "pop": {"wp_pop", 1},
 	"dijkstra": {"wp_dijkstra", 2}, "reach": {"wp_reach", 2},
 	"route": {"wp_route", 3}, "toposort": {"wp_toposort", 2},
+	"clumps": {"wp_clumps", 2}, "settle": {"wp_settle", 2},
+	"couples": {"wp_couples", 1}, "index": {"wp_index", 1},
+	"squeeze": {"wp_squeeze", 1}, "mesh": {"wp_mesh", 1},
+	"carve": {"wp_carve", 2},
+	"link":  {"wp_link", 1}, "bind": {"wp_bind", 3},
+	"bound": {"wp_bound", 3}, "clumped": {"wp_clumped", 1},
+	"tallies": {"wp_tallies", 1}, "tallied": {"wp_tallied", 3},
 
-	"earths": {"wp_earths", 1}, "waters": {"wp_waters", 1}, "contains": {"wp_contains", 2},
+	"earths": {"wp_earths", 1}, "spans": {"wp_spans", 1}, "waters": {"wp_waters", 1}, "contains": {"wp_contains", 2},
 	"chunk": {"wp_chunk", 2}, "windows": {"wp_windows", 2},
 	"pivot": {"wp_pivot", 1}, "gcd": {"wp_gcd", 2}, "lcm": {"wp_lcm", 2},
+	"solve":  {"wp_solve", 1},
 	"sortby": {"wp_sortby", 2}, "group": {"wp_group", 2},
 	"idx": {"wp_idx", 2}, "nth": {"wp_nth", 2}, "has": {"wp_has", 2},
 	"glean": {"wp_glean", 2}, "harvest": {"wp_harvest", 2},
 
-	"head":   {"wp_head", 1},
-	"tail":   {"wp_tail", 1},
 	"second": {"wp_second", 1},
 	"none":   {"wp_none", 2},
 	"enum":   {"wp_enum", 1},
-	"scan":   {"wp_scan", 3}, "gentle": {"wp_gentle", 3}, "snag": {"wp_snag", 2},
+	"scan":   {"wp_scan", 3}, "priors": {"wp_priors", 3}, "gentle": {"wp_gentle", 3}, "snag": {"wp_snag", 2},
 	"high": {"wp_high", 1}, "low": {"wp_low", 1},
 	"highidx": {"wp_highidx", 1}, "lowidx": {"wp_lowidx", 1},
 	"seekidx": {"wp_seekidx", 2}, "twist": {"wp_twist", 3},
+	"wind":    {"wp_wind", 3},
+	"siftidx": {"wp_siftidx", 2}, "idxs": {"wp_idxs", 2},
 	"overlaps": {"wp_overlaps", 2}, "overlapping": {"wp_overlapping", 2},
 	"within": {"wp_within", 2}, "spanning": {"wp_spanning", 2},
 	"holding": {"wp_holding", 2}, "width": {"wp_width", 1}, "dupe": {"wp_dupe", 1},
@@ -120,25 +129,25 @@ var builtins = map[string]builtin{
 	"cutstart":  {"wp_cutstart", 2},
 	"cutend":    {"wp_cutend", 2},
 	"replace":   {"wp_replace", 3}, "delve": {"wp_delve", 2},
-	"ord":     {"wp_ord", 1},
-	"spark":   {"wp_spark", 1},
-	"digit":   {"wp_digit", 1},
-	"repeat":  {"wp_repeat", 2},
-	"sign":    {"wp_sign", 1},
-	"sqrt":    {"wp_sqrt", 1},
-	"cbrt":    {"wp_cbrt", 1},
-	"ceil":    {"wp_ceil", 1},
-	"floor":   {"wp_floor", 1},
-	"round":   {"wp_round", 1},
-	"clamp":   {"wp_clamp", 3},
-	"pow":     {"wp_pow", 2},
-	"bor":     {"wp_bor", 2},
-	"band":    {"wp_band", 2},
-	"bxor":    {"wp_bxor", 2},
-	"bnot":    {"wp_bnot", 1},
-	"shl":     {"wp_shl", 2},
-	"shr":     {"wp_shr", 2},
-	"bin":     {"wp_bin", 1},
+	"ord":    {"wp_ord", 1},
+	"spark":  {"wp_spark", 1},
+	"digit":  {"wp_digit", 1},
+	"repeat": {"wp_repeat", 2},
+	"sign":   {"wp_sign", 1},
+	"sqrt":   {"wp_sqrt", 1},
+	"cbrt":   {"wp_cbrt", 1},
+	"ceil":   {"wp_ceil", 1},
+	"floor":  {"wp_floor", 1},
+	"round":  {"wp_round", 1},
+	"clamp":  {"wp_clamp", 3},
+	"pow":    {"wp_pow", 2},
+	"bor":    {"wp_bor", 2},
+	"band":   {"wp_band", 2},
+	"bxor":   {"wp_bxor", 2},
+	"bnot":   {"wp_bnot", 1},
+	"shl":    {"wp_shl", 2},
+	"shr":    {"wp_shr", 2},
+	"base":   {"wp_base", 2}, "unbase": {"wp_unbase", 2},
 	"mdist":   {"wp_mdist", 2},
 	"pi":      {"wp_pi", 0},
 	"e":       {"wp_e", 0},
@@ -157,7 +166,11 @@ var builtins = map[string]builtin{
 	"pattern": {"wp_pattern", 1}, "weft": {"wp_weft", 2},
 	"spin": {"wp_spin", 1}, "flip": {"wp_flip", 1}, "cell": {"wp_cell", 2}, "set": {"wp_set", 3},
 	"knots": {"wp_knots", 1}, "cells": {"wp_cells", 1},
-	"nb4": {"wp_nb4", 2}, "nb8": {"wp_nb8", 2},
+	"sited": {"wp_sited", 2}, "sites": {"wp_sites", 2},
+	"under": {"wp_under", 1}, "copies": {"wp_copies", 2},
+	"woven": {"wp_woven", 1}, "covers": {"wp_covers", 2},
+	"warp": {"wp_warp", 3},
+	"nb4":  {"wp_nb4", 2}, "nb8": {"wp_nb8", 2},
 	"rows": {"wp_rows", 1}, "cols": {"wp_cols", 1},
 	"knot": {"wp_knot", 2}, "row": {"wp_row", 1}, "col": {"wp_col", 1},
 }
@@ -190,11 +203,21 @@ type Options struct {
 	// DisableSpecialize keeps the general, tag-dispatching prelude verbs
 	// instead of the typed helpers, for the same reason.
 	DisableSpecialize bool
+	// DisableRegions keeps every turn of a fused loop's storage instead of
+	// handing it back when the turn ends. See regions.go.
+	DisableRegions bool
 	// DisableInPlace makes every grid update copy, for the same reason.
 	DisableInPlace bool
 	// DisableRelease keeps every Thread a function builds, instead of handing
 	// the dead ones back at the return. Same reason again.
 	DisableRelease bool
+	// Watch names one function whose calls are recorded: what each of its
+	// names held, on each call, rather than one value for the line. It is the
+	// answer to "ghost text does not work inside a recursion", and it is opt-in
+	// per function because recording per call costs the fusion inside the body.
+	// See w_watch in the runtime.
+	Watch string
+
 	// Trace makes the program report every top-level definition's value rather
 	// than only the output expression, which is what lets an editor show each
 	// line's result beside it. See `weave trace`.
@@ -204,16 +227,20 @@ type Options struct {
 // Generate compiles a checked file to C source. Problems are reported into bag.
 func Generate(f *ast.File, info *check.Info, bag *diag.Bag, opts Options) string {
 	g := &gen{
-		bag:       bag,
-		info:      info,
-		opts:      opts,
-		topFns:    map[string]int{},
-		topVals:   map[string]bool{},
-		cnames:    map[string]string{},
-		wrappers:  map[string]string{},
-		closures:  map[string]string{},
-		owned:     map[string]bool{},
-		userCtors: map[string]userCtor{},
+		bag:         bag,
+		info:        info,
+		opts:        opts,
+		topFns:      map[string]int{},
+		memoed:      map[string]bool{},
+		foldOwnedAt: -1,
+		byName:      map[string]*ast.Decl{},
+		topVals:     map[string]bool{},
+		cnames:      map[string]string{},
+		wrappers:    map[string]string{},
+		closures:    map[string]string{},
+		owned:       map[string]bool{},
+		consumed:    map[string][]bool{},
+		userCtors:   map[string]userCtor{},
 	}
 	for _, td := range f.Types {
 		for i, ct := range td.Ctors {
@@ -235,13 +262,44 @@ type gen struct {
 	closures     map[string]string
 	closureDecls []string
 
+	// watching is set while the body of Options.Watch's definition is being
+	// emitted, and is what turns g.watch from nothing into a record.
+	// watchLine is the line the watched definition starts on, which is where
+	// the record for what a call answered goes: the answer belongs to the
+	// function, not to whichever line the last expression happened to end on.
+	watching  bool
+	watchLine int
+	watchVar  string
+	// inFunc is set while a function's body is being emitted, which is where a
+	// `weave` binding reports the first value it ever holds. A top-level value
+	// is reported line by line already; a function's body is not, because it
+	// holds a different thing on every call. See firstValue.
+	inFunc bool
+	// lifted holds the lambdas made out of a named definition's body, so that
+	// inlining one still counts as being inside that definition.
+	lifted map[*ast.Lambda]bool
+	// weaving names the variables a fused `gentle` step assigns instead of
+	// building the Weaving the loop would take straight back apart. See
+	// weaving.go.
+	weaving weavingSplit
+
 	escaping map[*ast.Bind]bool
 	released []string
 
 	opts Options
 
-	topFns  map[string]int  // top-level function name -> arity
-	topVals map[string]bool // top-level value name (arity 0)
+	topFns map[string]int  // top-level function name -> arity
+	memoed map[string]bool // top-level names declared with `remember`
+
+	// foldOwnedName is the pattern variable a fold's step binds to the half of
+	// a Twine accumulator that is a collection, and foldOwnedAt is which half.
+	// The inliner marks that variable owned as it binds it; nothing else knows
+	// the C name it lands in. See inplace.go.
+	foldOwnedName string
+	foldOwnedAt   int
+
+	byName  map[string]*ast.Decl // top-level definitions, for inlining a named step
+	topVals map[string]bool      // top-level value name (arity 0)
 	cnames  map[string]string
 
 	wrappers  map[string]string // builtin name -> closure wrapper C name
@@ -251,6 +309,11 @@ type gen struct {
 	// so an update to one may write through. A fused fold puts its accumulator
 	// here for as long as its body is being emitted. See inplace.go.
 	owned map[string]bool
+
+	// consumed names, for each top-level function that has one, the parameters
+	// a caller may hand over outright rather than lend. Those functions get a
+	// second entry point that keeps the ownership. See consume.go.
+	consumed map[string][]bool
 
 	decls []string // forward declarations
 	defs  []string // function definitions
@@ -318,8 +381,12 @@ func (b *body) tmp() string {
 
 func (g *gen) file(f *ast.File) string {
 	for _, d := range f.Decls {
+		g.byName[d.Name] = d
 		if d.Arity() > 0 {
 			g.topFns[d.Name] = d.Arity()
+			if d.Memo {
+				g.memoed[d.Name] = true
+			}
 		} else {
 			g.topVals[d.Name] = true
 		}
@@ -328,6 +395,21 @@ func (g *gen) file(f *ast.File) string {
 		g.cnames[d.Name] = "wu_" + sanitize(d.Name)
 	}
 
+	// The grouping has to be known before the consumed-parameter fixpoint runs:
+	// a set of mutually tail-recursive definitions is compiled into one C
+	// function with a shared slot array, and a second entry point per member is
+	// not a shape that fits. Those members simply do not consume.
+	groups := tailGroups(f.Decls, g.topFns)
+	merged := map[string]bool{}
+	for _, group := range groups {
+		if len(group.members) > 1 {
+			for _, d := range group.members {
+				merged[d.Name] = true
+			}
+		}
+	}
+	g.computeConsumed(f, merged)
+
 	// Values first, in declaration order; then the functions, grouped so that a
 	// set which tail-calls itself round becomes one loop.
 	for _, d := range f.Decls {
@@ -335,7 +417,7 @@ func (g *gen) file(f *ast.File) string {
 			g.emitTopValue(d)
 		}
 	}
-	for _, group := range tailGroups(f.Decls, g.topFns) {
+	for _, group := range groups {
 		if len(group.members) > 1 {
 			g.emitMergedGroup(group)
 			continue
@@ -348,6 +430,12 @@ func (g *gen) file(f *ast.File) string {
 	main.line("w_init();")
 	if g.opts.Trace {
 		g.emitTrace(main, f)
+		if g.opts.Watch != "" {
+			// The head of the ring has been written as it went; this is the
+			// count and the tail. A run cut short by a limit never gets here,
+			// and the head is the half that matters most.
+			main.line("w_watch_flush();")
+		}
 	} else {
 		// Every bare expression is an answer, printed in the order it was
 		// written. A chain bound to a name stays quiet; a chain left bare is
@@ -412,6 +500,9 @@ func (g *gen) emitTrace(b *body, f *ast.File) {
 				continue
 			}
 			// The accessor reports itself, line by line; forcing it is enough.
+			// A definition ExpandPatterns generated reports nothing of its own —
+			// the line already reported the whole value it was taken out of —
+			// but it still has to be forced, or the names it binds never run.
 			b.line("(void)%s();", g.cnames[d.Name])
 			continue
 		}
@@ -434,11 +525,20 @@ func (g *gen) emitTopValue(d *ast.Decl) {
 	b.open("if (!%s_ready) {", cname)
 	if len(d.Clauses) == 0 {
 		b.line("%s_v = w_earth(0);", cname)
-	} else if g.opts.Trace {
+	} else if g.opts.Trace && !d.Hidden {
 		// Reporting happens where the value is built, so that a definition
 		// spanning several lines reports one value per line. emitTrace only
 		// has to make sure the accessor runs.
-		v := g.traced(b, d.Clauses[0].Body, newScope(nil), d.Name, d.NamePos.Line)
+		//
+		// A definition that took its value apart reports under the pattern that
+		// was written, holding the Twine or Thread whole: `(width, height)` on
+		// one line rather than `width` and `height` on the same one. The
+		// projections it expanded into are Hidden and report nothing.
+		label := d.Name
+		if d.Display != "" {
+			label = d.Display
+		}
+		v := g.traced(b, d.Clauses[0].Body, newScope(nil), label, d.NamePos.Line)
 		b.line("%s_v = %s;", cname, v)
 	} else {
 		v := g.expr(b, d.Clauses[0].Body, newScope(nil))
@@ -466,6 +566,19 @@ func (g *gen) emitTopFunc(d *ast.Decl, loops bool) {
 		g.emitMemo(d, cname)
 		cname += "_body"
 	}
+
+	// A function with a consumed parameter is written twice over: the body,
+	// which keeps the ownership it was handed, and the name everyone else
+	// calls, which gives it back. See consume.go.
+	consumed := g.consumed[d.Name]
+	if len(consumed) > 0 {
+		g.decls = append(g.decls, fmt.Sprintf("static Value %s(Value *env, Value *args);", cname))
+		g.defs = append(g.defs, fmt.Sprintf(
+			"static Value %s(Value *env, Value *args) {\n  return w_disown(%s_move(env, args));\n}\n",
+			cname, cname))
+		cname += "_move"
+	}
+
 	g.decls = append(g.decls, fmt.Sprintf("static Value %s(Value *env, Value *args);", cname))
 
 	b := &body{g: g}
@@ -478,6 +591,16 @@ func (g *gen) emitTopFunc(d *ast.Decl, loops bool) {
 		b.line("Value %s = args[%d];", params[i], i)
 	}
 
+	// The consumed parameters are ours for the length of the body, so an update
+	// to one writes through and a fold seeded with one inherits the ownership
+	// rather than disowning what it hands back.
+	for i, takes := range consumed {
+		if takes {
+			g.owned[params[i]] = true
+			defer delete(g.owned, params[i])
+		}
+	}
+
 	var ti *tailInfo
 	// A memoised definition keeps its self-calls as calls: turning one into a
 	// jump would step around the very lookup the marker asked for.
@@ -485,12 +608,34 @@ func (g *gen) emitTopFunc(d *ast.Decl, loops bool) {
 		owned := g.ownedParams(d)
 		vars := map[string]bool{}
 		for i, ok := range owned {
-			if ok {
+			// A consumed parameter is not disowned on the way out: the caller
+			// gave up its reference, so what leaves is still ours to write.
+			if ok && !(i < len(consumed) && consumed[i]) {
 				vars[params[i]] = true
 			}
 		}
 		ti = &tailInfo{name: d.Name, params: params, owned: owned, ownedVars: vars}
 		b.open("for (;;) {")
+	}
+
+	if g.opts.Trace {
+		g.inFunc = true
+		defer func() { g.inFunc = false }()
+	}
+
+	if g.opts.Watch != "" && d.Name == g.opts.Watch {
+		// Everything emitted from here reports per call. This sits inside the
+		// loop when there is one, because a self tail call is a jump and each
+		// turn of that loop is a call — a counter bumped outside would file the
+		// whole recursion as one.
+		//
+		// It also sits before the parameters are matched, so that every record
+		// a call makes carries the same number, including the ones a pattern in
+		// the parameter list binds.
+		g.watchVar = fmt.Sprintf("c%d", g.fresh())
+		b.line("int64_t %s = w_watch_enter();", g.watchVar)
+		g.watching, g.watchLine = true, d.NamePos.Line
+		defer func() { g.watching = false }()
 	}
 
 	g.emitClauses(b, d, params, ti)
@@ -580,6 +725,15 @@ func (g *gen) emitClauses(b *body, d *ast.Decl, params []string, ti *tailInfo) {
 // built and nothing else can reach. The result is taken into a local before the
 // frees run, since it is usually read out of one of them.
 func (g *gen) emitReturn(b *body, v string) {
+	if g.watching {
+		// What the call answered. A tail call does not come through here — it
+		// is a jump, and the next call's records are what follows it — which is
+		// right: an iteration's answer is the next iteration.
+		out := fmt.Sprintf("z%d", g.fresh())
+		b.line("Value %s = %s;", out, v)
+		b.line("w_watch(%s, %d, \"\", %s);", g.watchVar, g.watchLine, out)
+		v = out
+	}
 	if len(g.released) == 0 {
 		b.line("return %s;", v)
 		return
@@ -597,6 +751,7 @@ func (g *gen) emitReturn(b *body, v string) {
 type binding struct {
 	name string
 	expr string
+	pos  token.Pos // where the name was written, for `weave trace -watch`
 }
 
 func (g *gen) emitBound(b *body, binds []binding, sc *scope) {
@@ -606,12 +761,50 @@ func (g *gen) emitBound(b *body, binds []binding, sc *scope) {
 		// the ownership analysis recognise a parameter it is threading.
 		if isCIdent(bd.expr) {
 			sc.bind(bd.name, bd.expr)
+			g.watch(b, bd.pos, bd.name, bd.expr)
 			continue
 		}
 		v := fmt.Sprintf("b%d", g.fresh())
 		b.line("Value %s = %s;", v, bd.expr)
 		sc.bind(bd.name, v)
+		g.watch(b, bd.pos, bd.name, v)
 	}
+}
+
+// watch records what a name held, when the function being emitted is the one
+// `weave trace -watch` was pointed at. It is off everywhere else, which is the
+// whole design: recording per call defeats the fusion inside a body the way
+// staged compilation defeats it across lines, so it is paid for one function at
+// a time and only when it is asked for.
+func (g *gen) watch(b *body, pos token.Pos, name, val string) {
+	if !g.watching {
+		return
+	}
+	b.line("w_watch(%s, %d, \"%s\", %s);", g.watchVar, pos.Line, escape(name), val)
+}
+
+// firstValue reports the first value a binding inside a function body ever
+// holds, as an ordinary by-line record — so the ghost text on that line says
+// what the name was the first time through.
+//
+// It is one value where there are many, and it is the first rather than the
+// last because the first is the one you can reason about: it is the call you
+// would have made by hand. The rest are what `-watch` is for.
+//
+// The flag is per binding site rather than per function, which costs one
+// predictable branch and is right for every shape at once — a lambda inside the
+// body, a binding under a `ward`, a self tail call that comes round again. It
+// records the first time this line is reached, whatever reached it.
+func (g *gen) firstValue(b *body, pos token.Pos, name, val string) {
+	if !g.opts.Trace || !g.inFunc || pos.Line == 0 {
+		return
+	}
+	seen := fmt.Sprintf("seen%d", g.fresh())
+	b.line("static bool %s;", seen)
+	b.open("if (!%s) {", seen)
+	b.line("%s = true;", seen)
+	b.line("w_trace(%d, \"%s\", %s);", pos.Line, escape(name), val)
+	b.close("}")
 }
 
 // isCIdent reports whether an emitted expression is just a variable name.
@@ -643,7 +836,7 @@ func (g *gen) match(p ast.Pattern, subject string) (string, []binding) {
 		return "", nil
 
 	case *ast.PVar:
-		return "", []binding{{p.Name, subject}}
+		return "", []binding{{p.Name, subject, p.P}}
 
 	case *ast.PInt:
 		return fmt.Sprintf("(%s).earth == %dLL", subject, p.Value), nil
@@ -685,7 +878,7 @@ func (g *gen) match(p ast.Pattern, subject string) (string, []binding) {
 		}
 		if v, ok := p.Rest.(*ast.PVar); ok {
 			binds = append(binds, binding{v.Name,
-				fmt.Sprintf("wp_drop(w_earth(%d), %s)", len(p.Elems), subject)})
+				fmt.Sprintf("wp_drop(w_earth(%d), %s)", len(p.Elems), subject), v.P})
 		}
 		return strings.Join(conds, " && "), binds
 
@@ -1010,6 +1203,14 @@ func (g *gen) ctorWrapper(name string, arity int) string {
 	return w
 }
 
+// arrayOf lays out arguments as the C array a compiled function takes, and
+// names it.
+func (g *gen) arrayOf(b *body, args []string) string {
+	arr := fmt.Sprintf("a%d", g.fresh())
+	b.line("Value %s[] = {%s};", arr, strings.Join(args, ", "))
+	return arr
+}
+
 // app compiles a call, using a direct C call whenever the callee is known and
 // saturated.
 func (g *gen) app(b *body, e *ast.App, sc *scope) string {
@@ -1036,13 +1237,17 @@ func (g *gen) app(b *body, e *ast.App, sc *scope) string {
 		return out
 	}
 
+	// A helper handed a collection the generator holds owned takes it outright,
+	// so what it hands back is still ours to write to.
+	if out, ok := g.movedCall(b, e, sc); ok {
+		return out
+	}
+
 	if v, ok := e.Fn.(*ast.Var); ok {
 		if _, shadowed := sc.lookup(v.Name); !shadowed {
 			if arity, isTop := g.topFns[v.Name]; isTop && len(e.Args) == arity {
 				args := g.args(b, e.Args, sc)
-				arr := fmt.Sprintf("a%d", g.fresh())
-				b.line("Value %s[] = {%s};", arr, strings.Join(args, ", "))
-				return fmt.Sprintf("%s(NULL, %s)", g.cnames[v.Name], arr)
+				return fmt.Sprintf("%s(NULL, %s)", g.cnames[v.Name], g.arrayOf(b, args))
 			}
 			if bi, ok := builtins[v.Name]; ok && len(e.Args) == bi.arity {
 				args := g.args(b, e.Args, sc)
@@ -1193,6 +1398,20 @@ func (g *gen) lambdaFn(e *ast.Lambda, sc *scope) (string, []string) {
 // bind compiles one local binding. A binding with parameters becomes a lambda,
 // which keeps local functions and anonymous ones on the same path.
 func (g *gen) bind(b *body, bind *ast.Bind, sc *scope) {
+	// A binding that takes its value apart is the value in a local, then the
+	// same match a parameter gets. A pattern that can fail is a soft
+	// diagnostic in the checker, so the trap here is the case that got past it.
+	if bind.Pat != nil {
+		v := g.expr(b, bind.Value, sc)
+		name := fmt.Sprintf("l%d", g.fresh())
+		b.line("Value %s = %s;", name, v)
+		cond, binds := g.match(bind.Pat, name)
+		if cond != "" {
+			b.line("if (!(%s)) w_fail(\"the binding did not match\");", cond)
+		}
+		g.emitBound(b, binds, sc)
+		return
+	}
 	if len(bind.Params) > 0 {
 		lam := &ast.Lambda{Params: bind.Params, Body: bind.Value, P: bind.Pos()}
 		if g.mentions(bind) {
@@ -1209,6 +1428,8 @@ func (g *gen) bind(b *body, bind *ast.Bind, sc *scope) {
 	name := fmt.Sprintf("l%d", g.fresh())
 	b.line("Value %s = %s;", name, v)
 	sc.bind(bind.Name, name)
+	g.watch(b, bind.NamePos, bind.Name, name)
+	g.firstValue(b, bind.NamePos, bind.Name, name)
 	if g.escaping[bind] {
 		g.released = append(g.released, name)
 	}

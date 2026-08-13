@@ -4,3 +4,4 @@
 *.out
 bench/build/
 bench/input/text.txt
+/aoc/

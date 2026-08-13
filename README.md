@@ -49,16 +49,34 @@ and works up to two solved Advent of Code puzzles. The full design lives in
 - **Lazy where it matters.** `bend | sift | seek` fuses into a single pass
   with no intermediate collections, and `flow` gives you an endless sequence
   the compiler makes you bound.
-- **`_` for the argument you did not name.** `xs where (mod _ 2 | eq 0)`, and
-  `web | get _ "a"` when the verb wants the collection first.
-- **Real data structures.** `Web` and `Circle` are hash array mapped tries and
-  `Taveren` is a leftist heap. A shortest path is one verb: give `dijkstra` the
-  steps out of a place and it answers with the cost of reaching everywhere —
-  see `examples/maze.weave`.
-- **206 verbs**, named after [rask](https://github.com/malleum/rask) wherever
+- **Words for the arguments you did not name.** `this` is the first, `that` the
+  second, `fore`, `mid` and `aft` the components of a Twine:
+  `xs where (mod this 2 | eq 0)`, `braid (add this that) 0`,
+  `pairs as add fore aft`. `web | get _ "a"` puts the piped value where
+  the hole is, for the verbs that want the collection first.
+- **Real data structures.** `Web` and `Circle` are hash array mapped tries,
+  `Taveren` is a leftist heap, `Pattern` is a grid you can lay out from its
+  knots or ask a summed-area question of, and `Link` is disjoint sets. A shortest path is
+  one verb: give `dijkstra` the steps out of a place and it answers with the
+  cost of reaching everywhere — see `examples/maze.weave`. `clumps` gives the
+  groups of a graph that can reach one another, and a `Link` answers the same
+  question while the joining is still going on, which is what Kruskal's
+  algorithm needs.
+- **233 verbs**, named after [rask](https://github.com/malleum/rask) wherever
   there is no One-Power word for the job, so the two read alike. `weave verbs`
   prints them all, and [docs/verbs.md](docs/verbs.md) is the same list with
   types, generated from the compiler's own prelude.
+- **The ring shapes, without a ring type.** `turn n xs` shifts a sequence round
+  — what comes off the front goes on the back, a negative count turns the other
+  way, and any count works however far past the length it is. `wrap i xs` is
+  `nth` on a ring, so `wrap (neg 1)` is the last strand and only an empty Thread
+  answers `Stilled`; `wind` is the same for writing, so `wind (neg 1) v xs`
+  replaces the last one. Between them they are what a circular list type would
+  have been wanted for, without a second sequence type whose every verb needs
+  its own ruling — and without pretending an array with modulo indexing is the
+  O(1) splice a marble ring actually needs. `repeat n xs` lays a sequence end to
+  end, which saves building the outer Thread that `copies n xs | flat` throws
+  away. All four are `Ply`, so text turns, wraps and repeats by rune too.
 
 ## Status
 
@@ -78,24 +96,26 @@ $ printf '1721\n979\n366\n299\n675\n1456\n' | weave run examples/aoc2020-day01.w
 | Type inference and Talents | working |
 | Exhaustiveness and reachability | working |
 | C backend, runtime, `weave run` | working |
-| Web, Circle, Taveren | working |
+| Web, Circle, Taveren, Link | working |
 | In-place updates, in a loop and in a fold | working |
 | User-declared sum types | working |
 | Endless `flow` sequences | working |
 | `remember` memoisation | working |
 | `Weaving`, `rescue`, `dijkstra` | working |
 | Tree-sitter grammar, LSP, formatter, REPL | working |
-| Tutorial, generated vocabulary reference | working |
+| Tutorial, generated vocabulary reference, `weave docs` | working |
 | Several bare expressions per file | working |
 | Language server inside Markdown code blocks | working |
 | A flat hash table for immediate keys | working |
 | A memo table of `remember`'s own | working |
 | Reusing dead arena memory | working |
-| Fusing `zip` and `items` into the loop that unpacks them | working |
+| Fusing `zip`, `items`, `enum` and `couples` into the loop that unpacks them | working |
 | Releasing the Threads a call leaves behind | working |
 | Reading a map back without a comparison sort | working |
 | Fusing `zipwith` into the loop that consumes it | working |
 | A `Held` of a Power is not a box | working |
+| Fusing the grid walks, and a lambda written on the spot | working |
+| Summed-area tables over a grid (`tallies`) | working |
 | Monomorphised container storage | next |
 | Structured input parsing (`delve`) | working |
 
@@ -134,6 +154,14 @@ commands
 Output is coloured when it is going to a terminal, and plain when it is not.
 `NO_COLOR`, `TERM=dumb` and `WEAVE_COLOR=never` all turn it off.
 
+`weave build -tally` compiles a program that keeps its own books: every live
+block is recorded against the source line that asked for it, and the breakdown
+at the high-water mark goes to stderr when it ends. The arena bump-allocates out
+of megabyte chunks, so an ordinary heap profiler sees one `malloc` charged to
+whichever call happened to exhaust the last chunk and nothing at all about what
+went in it. It is a debugging build — the bookkeeping costs more than the
+allocation does — so never time one.
+
 `weave build -overflow` compiles Earth arithmetic with an overflow check, so a
 number too large for an `int64` stops the program and names the verb instead of
 wrapping round to a wrong answer. It costs a third to three quarters on a loop
@@ -148,7 +176,7 @@ Priority queues and graphs
   dijkstra :: (a -> Thread (Earth, a)) -> a -> Web a Earth  where Ord a
     cheapest cost to every node reachable from here, given a step function
 
-1 of 206 built-ins
+1 of 233 built-ins
 ```
 
 `weave docs` serves the same vocabulary as a page, with search over every name,
@@ -181,9 +209,15 @@ disagree — a full parse and type-check takes about 4 ms, so it re-checks on
 every keystroke rather than debouncing.
 
 It provides diagnostics (with the compiler's hints), hover showing inferred
-types and built-in documentation, completion over the 206 built-ins and your
+types and built-in documentation, completion over the 233 built-ins and your
 own definitions with their signatures, signature help while applying a verb,
 and formatting.
+
+Hover answers where a name is **bound** as well as where it is used — a
+parameter in the list, a `weave` name, a name a pattern takes apart — which is
+the half anybody actually hovers, and the one case where the answer is not
+already on the screen. A binder is answered as itself: a parameter called `sum`
+is a parameter, not the verb it shadows.
 
 It also works **inside ` ```weave ` blocks in a Markdown file**: the server
 finds the fences and checks each as its own program, reporting diagnostics at
@@ -197,8 +231,49 @@ vim.lsp.enable("weave")
 
 `weave.nvim/` shows every definition's value at the end of its line, run
 against the largest input file next to the program — which for Advent of Code
-is the real one and not the sample. It builds on `weave trace`, which reports
-one record per definition and is dull enough to drive from anything.
+is the real one and not the sample. A chain written one stage to a line gets a
+value for *every* line it spans, so a pipeline reads as a sequence of shapes.
+It builds on `weave trace`, which reports one record per line and is dull
+enough to drive from anything.
+
+A file being edited does not compile most of the time, so `weave trace` leaves
+out the top-level items the mistake reached and reports the rest, at the lines
+they are on. The values stay put while a line is being typed instead of
+blinking out on every keystroke.
+
+A definition that will not *finish* is the same problem wearing different
+clothes, and gets the same answer. `-timeout` gives one definition a limit and
+`-memory` gives it a ceiling in megabytes; a definition that runs past either
+reports **`⧖`** for the clock or **`⊘`** for the ceiling instead of a value, and
+the rest of the file is traced without it. Neither mark is a value, and a
+half-written definition is as likely to ask for every byte in the machine as it
+is to loop for ever — which matters when this runs on every save.
+
+Ghost text reaches inside a function body too, for the **first** value each
+binding there ever holds. A line inside a function has no single value, so it
+used to have none at all; the first is the one you can reason about, because it
+is the call you would have made by hand. It survives the line that never
+finishes: a loop that times out still shows what its first step held.
+
+For the rest of a recursion there is **`weave trace -watch f`**, and
+`:WeaveCalls` in the editor, which put what `f`'s names held on *each* call into
+a floating window — a column per name, a row per call, bounded at both ends with
+the count between them. It runs on demand rather than on save, because recording
+per call costs the fusion inside the body, and a watched function is not inlined
+into a fused loop, which is a real difference in what gets compiled. Its records
+are the ordinary trace format with a call number in front:
+`@LINE⇥CALL⇥NAME⇥VALUE`, marked so that anything reading the by-line records
+skips them.
+
+The plugin also does Advent of Code: `:AocInput` fetches the input beside the
+program, `:AocProblem` opens the day's text in a split without taking the
+cursor out of the file you are editing, and `:AocSubmit` sends the answer for
+the part the cursor is in — refusing one the record already rules out, since a
+repeat of a wrong answer is wrong and an answer past a bound already found is
+past it. A right answer refetches the day on its own, so part two arrives
+without asking. `:AocTime` says what has already been sent for each part with
+what the site said about it, and the bracket the too-highs and too-lows put the
+answer in. Which puzzle a file belongs to is read off the directories above it.
 
 [docs/nixvim.md](docs/nixvim.md) wires all four pieces up in about thirty
 lines.
@@ -211,20 +286,50 @@ there is no code path that would emit them. Comments are kept, and a call
 written as a pipeline comes back as one.
 
 It has one setting, and it is about spelling. Weave gives its punctuation words
-— `is` for `=`, `gives` for `:`, `through` for `|` — and the words are the
-language while the symbols are the shorthand, so the words are what it prints:
+— `is` for `=`, `gives` for `:`, `through` for `|`, `this` for `_` — and the
+words are the language while the symbols are the shorthand, so the words are
+what it prints:
 
 ```
-nums = Source|lines|bend(earth)   ->   nums is Source through lines through bend earth
+nums = Source|lines|bend(earth)   ->   nums is Source through lines as earth
 ```
 
-`weave fmt -terse` prints the symbols instead. They are the same tokens, so
-either spelling reads back as the other and neither is more correct — it is a
-question of whether you would rather read or squint.
+That is a stronger claim than it looks, because the formatter *chooses* the
+spelling rather than keeping the one you typed:
 
-A pipeline past 80 columns is broken one stage per line. `-check` exits
-non-zero when a file is not already formatted, which is what `make check` runs
-over the examples.
+- **`sift` becomes `where` and `bend` becomes `as`** in the wordy style, and
+  back into verbs in the terse one. Which you wrote is not a matter of meaning
+  — a particle desugars to its verb by name, so both resolve to the same thing
+  even where the name has been shadowed.
+- **A lambda becomes a hole group** wherever that reads back as the same
+  function: `(x : add x 1)` comes back as `(add this 1)` and
+  `((a, b) : add a b)` as `(add fore aft)`. Whether it can is not a
+  property of the lambda alone — a hole is claimed by the brackets closest to
+  it, so an occurrence inside a nested group would be claimed by that instead.
+  Rather than enumerate the cases, the rewrite is checked by doing it: print
+  the candidate, read it back, and keep it only if what comes back is the
+  candidate. `(x : add x (mul x 2))` fails that check and keeps its parameter.
+
+`weave fmt -terse` prints the symbols and the verbs instead. They are the same
+tokens, so either spelling reads back as the other and neither is more correct
+— it is a question of whether you would rather read or squint.
+
+A pipeline past 80 columns is broken one stage per line, and a stage that is
+still too long is broken again at its arguments, one to a line at a further
+indent. A bracketed literal — a Thread or a Twine — breaks one element to a
+line with the comma leading, so that every line after the first opens no block
+and continues the one above it. And a chain ending in a hole word is still a
+chain: `xs | aft` desugars in the parser to a match on the pair it opens, so
+the formatter used to stop seeing a pipeline at all and let the whole thing run
+off the edge. Every code line in this repository is inside the margin.
+
+`-check` exits non-zero when a file is not already formatted, which is what
+`make check` runs over the examples and the Advent of Code solutions.
+
+It refuses a program it cannot parse rather than printing it. The parser
+recovers by leaving what it could not read out of the tree, and printing that
+tree would quietly delete the line the mistake was on — the one thing a
+formatter must never do.
 
 ### Testing against the samples
 
@@ -301,7 +406,20 @@ runtime is compiled once into cached object files.
 
 The runtime is cached as object files under your user cache directory, keyed by
 its contents and the flags it was built with, so only your program is compiled
-on each run. Set `WEAVE_CACHE` to move it, or to empty to turn it off.
+on each run. Set `WEAVE_CACHE` to move it, or to empty to turn it off; a cache
+directory that cannot be made is not an error, since caching is an optimisation
+and the build has a perfectly good uncached path.
+
+Two more environment variables the runtime reads. `WEAVE_MEM_CAP` is a ceiling,
+in bytes, on what a compiled program may take from the operating system: it
+stops rather than growing past it, and exits with a code of its own so that a
+ceiling is not mistaken for an ordinary failure. `weave trace` sets it; nothing
+else does, because a batch job given an input is entitled to whatever that input
+costs. `WEAVE_LSP_LOG` names a file for `weave lsp` to append to — every method
+with its timing, and any panic with its stack. Standard output is the protocol
+and standard error belongs to the editor, so a server with something to say to a
+person needs somewhere else to say it, and it is the first thing to reach for
+when the language server misbehaves.
 
 | | cold | warm |
 |---|---|---|
@@ -337,6 +455,14 @@ the compiler has proved unshared, with immediate keys, is no longer a
 persistent trie but a flat open-addressed table, and `remember` no longer keeps
 its results in a map at all. Advent of Code 2024 day 11 went from 402 ms to
 27 ms with that second change alone.
+
+That table packs itself further when the values are unboxed too: a slot then
+holds two raw payloads rather than two tagged Values, with one shared tag per
+column, so it is sixteen bytes instead of thirty-two and a probe is a single
+`int64` compare. It widens back to tagged slots the moment anything disagrees,
+so the packing is an experiment the table abandons rather than a promise the
+type system has to keep. Day 22 went from 622.5 ms and 387 MB to 516.9 ms and
+261 MB.
 
 The arena does not collect, but it does reuse: the places that know a block is
 dead — a buffer that has just outgrown its array, a trie node an owned insert
@@ -382,8 +508,23 @@ inlined to a multiplication, and no Thread allocated anywhere. Chains ending in
 `seek`, `any`, `all` or `first` stop early, so a search no longer maps the
 elements it never looks at.
 
-`weave build -no-fuse` turns it off, and the test suite compiles 34 pipeline
-shapes both ways and requires identical output.
+A chain fuses when there is something to save. Two stages save the Thread
+between them; a producer the loop *generates* — a `span`, or one of the grid
+walks `knots`, `nb4`, `nb8`, `around4`, `around8` — saves the array it would
+have built, so one stage is enough and a bare consumer is enough too; and a
+lambda written on the spot saves the closure, which is what a backtracking
+search spends its memory on. `enum` and `couples` join `zip` and `items` as
+producers that yield *pairs*, so a Twine the next stage takes straight apart is
+never built at all.
+
+Three measurements from Advent of Code 2025, all on real input: day 4's
+eight-neighbour count went from 628 ms to 93 ms once the neighbour walk stopped
+allocating a Thread per cell, day 8 from 592 ms to 485 ms on the pairs, and day
+12's peak heap from 2.5 GB to 1.6 GB as nine million closures stopped being
+built.
+
+`weave build -no-fuse` turns it off, and the differential suite compiles every
+pipeline shape both ways and requires identical output.
 
 ### Primitive specialisation
 
@@ -423,10 +564,41 @@ and copies from the first shared node down, so the first turn of a loop copies,
 later turns mostly do not, and no node is copied twice however long the loop
 runs.
 
-The proof is deliberately narrow. Bind the collection to another name, put it in
-a Twine, capture it in a lambda, or take its `cells`/`keys` — which share the
-storage — and it copies. `weave build -no-in-place` turns it off, and the
-differential suite runs every aliasing hazard both ways.
+The proof used to be a whitelist: about seventeen blessed verbs per collection
+could read it and the rest of the prelude could not, so a loop that asked its
+map anything unusual copied on every turn with nothing in the source to say why.
+It is now stated the other way round. A verb may read the collection unless it
+can *keep* it, and only two things disqualify one — nine hand back a window on
+the argument's own array (`take`, `drop`, `sever`, `strands`, `takewhile`,
+`dropwhile`, `chunk`, `windows`, `cells`) and three hand the argument itself
+back when the update had nowhere to go (`mend`, `twist`, `set`). Beyond that the
+*type* decides: the collection's own type constructor must not occur in the
+call's result. That rule needs no list to maintain, covers the program's own
+helper functions, and cannot be quietly narrowed by adding a verb.
+
+Four more shapes joined it. `gentle` threads its accumulator exactly as `braid`
+does and had simply been left out. A loop that only *sometimes* updates keeps
+the fast path, since handing the collection straight back into its own slot is
+as single-threaded as writing to it. A fold's accumulator may be a **Twine of
+state** with the collection as one half — `(board, position)` threaded through a
+walk — which is how you carry two things and used to be the worst shape in the
+language. And a **named** step function of one clause is read back as the lambda
+it is and inlined, so lifting a step out to a name costs nothing.
+
+A walk over 20,000 elements carrying `(thread, index)` through a `gentle` went
+from 10.1 s and 1.2 GB to 6 ms and 1.8 MB.
+
+Widening it uncovered a miscompile that had been there since the analysis was
+written. The arguments of a tail call are evaluated in order into the loop's
+slots, so an update at one writes through before a later one is evaluated — and
+`fill (sub n 1) (put w n n) (add acc (len w))` read the map *after* the write it
+had not yet conceptually performed. The differential suite caught it the moment
+the reading rule was wide enough to make it easy to write.
+
+Bind the collection to another name, put it in a Twine, capture it in a lambda,
+or read it in a sibling argument of the update, and it copies. `weave build
+-no-in-place` turns it off, and the differential suite runs every aliasing
+hazard both ways.
 
 `dijkstra` skips the analysis entirely: its frontier never leaves the function
 and its distance map does not escape until it is returned, so both are owned by
@@ -460,13 +632,19 @@ would have cost every call an allocation whether it needed one or not.
 | | |
 |---|---|
 | [docs/tutorial.md](docs/tutorial.md) | learn the language, from `Source` to two solved puzzles |
-| [docs/verbs.md](docs/verbs.md) | all 206 verbs with types, generated from the prelude |
+| [docs/verbs.md](docs/verbs.md) | all 233 verbs with types, generated from the prelude |
+| `weave docs` | the same vocabulary as a page on localhost, with search |
 | [docs/performance.md](docs/performance.md) | Weave against Go, raw and on Advent of Code 2024 |
 | [docs/nixvim.md](docs/nixvim.md) | grammar, LSP, formatter and plugin in one nixvim block |
 | [SPEC.md](SPEC.md) | the language design, and why each piece is the way it is |
 
 The reference is generated by `make docs`, and a test fails if it is stale, so
-a verb cannot be added without being documented. Every ` ```weave ` block in
+a verb cannot be added without being documented. `weave docs` builds the same
+thing as one self-contained page — no font, no script, no stylesheet fetched
+from anywhere — with search over every name, signature and description at once.
+There each name carries a second description written for someone who already
+writes Weave: every verb explained by other verbs and every type by other
+types, which is a poor introduction and a good reference. Every ` ```weave ` block in
 every one of these files is compiled by the test suite, and where a block shows
 its output, that output is checked — the examples cannot rot.
 
@@ -513,5 +691,3 @@ docs/             tutorial, vocabulary reference, performance, editor setup
 Every example must parse, type-check, compile, and produce its expected
 output: `internal/parser/examples_test.go` and `internal/build/build_test.go`
 enforce it, so a change that breaks a realistic program fails the build.
-
-Huh, what do you know? Code.

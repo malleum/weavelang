@@ -180,7 +180,7 @@ func TestLanguageBehaviour(t *testing.T) {
 		{
 			name: "sort and zip",
 			src:  "answer is zip (sort [3 1 2]) [\"a\" \"b\" \"c\"] | first\nanswer",
-			want: "Held (1, a)",
+			want: `Held (1, "a")`,
 		},
 		{
 			name: "pattern neighbours",
@@ -506,19 +506,28 @@ func TestLanguageBehaviour(t *testing.T) {
 		},
 
 		// The verbs added in the rask-alignment pass.
-		{name: "head tail second", src: "(head [1 2 3], tail [1 2 3] | sum, second [1 2 3])",
+		{name: "second", src: "(first [1 2 3], drop 1 [1 2 3] | sum, second [1 2 3])",
 			want: "(Held 1, 5, Held 2)"},
 		{name: "none", src: "(none (gt 9) [1 2], none (gt 1) [1 2])", want: "(Light, Shadow)"},
-		{name: "enum", src: "[\"a\" \"b\"] | enum | bend (p : p)", want: "(0, a)\n(1, b)"},
+		{name: "enum", src: "[\"a\" \"b\"] | enum | bend (p : p)", want: "(0, \"a\")\n(1, \"b\")"},
 		{name: "scan", src: "[1 2 3] | scan (a b : add a b) 0", want: "1\n3\n6"},
 		{name: "scan is sums", src: "[1 2 3] | scan add 0 | eq (sums [1 2 3])", want: "Light"},
 		{name: "scan fuses as a stage", src: "[1 2 3 4] | scan add 0 | sift (gt 2) | sum", want: "19"},
-		{name: "dupe", src: "[1 2 3 2 1] | dupe", want: "Held (3, 2)"},
+		{name: "dupe", src: "[1 2 3 2 1] | dupe", want: "Held (3, 1, 2)"},
+		// The second position is what makes a cycle measurable: the length is
+		// the two subtracted, and before it was there the only way to it was a
+		// second pass over a Thread `dupe` exists to walk once.
+		{name: "dupe measures the cycle", src: "[1 2 3 2 1] | dupe | otherwise (0, 0, 0) | ((at, from, _) : sub at from)", want: "2"},
+		{name: "dupe repeats the first element", src: "[7 1 2 7] | dupe", want: "Held (3, 0, 7)"},
+		{name: "dupe repeats at once", src: "[4 4] | dupe", want: "Held (1, 0, 4)"},
 		{name: "high and low", src: "(high [3 1 4], low [3 1 4])", want: "(Held 4, Held 1)"},
 		{name: "highidx and lowidx", src: "(highidx [3 1 4], lowidx [3 1 4])", want: "(Held 2, Held 1)"},
 		{name: "high of nothing", src: "high (span 1 0)", want: "Stilled"},
 		{name: "seekidx", src: "seekidx (gt 2) [1 2 3 4]", want: "Held 2"},
 		{name: "seekidx finds nothing", src: "seekidx (gt 9) [1 2 3]", want: "Stilled"},
+		{name: "siftidx", src: "siftidx even [1 2 3 4] | air", want: "[1 3]"},
+		{name: "idxs", src: "idxs 1 [3 1 4 1 5] | air", want: "[1 3]"},
+		{name: "idxs finds nothing", src: "idxs 9 [1 2 3] | len", want: "0"},
 		{name: "twist", src: "[1 2 3] | twist 1 inc", want: "1\n3\n3"},
 		{name: "twist out of bounds", src: "[1 2 3] | twist 9 inc | sum", want: "6"},
 
@@ -539,7 +548,7 @@ func TestLanguageBehaviour(t *testing.T) {
 		{
 			name: "an endless cycle stopped by dupe",
 			src:  "[1, neg 2, 3, 1] | cycle | scan add 0 | dupe",
-			want: "Held (5, 2)",
+			want: "Held (5, 2, 2)",
 		},
 		{
 			name: "gentle stops when the step gentles",
@@ -566,12 +575,12 @@ func TestLanguageBehaviour(t *testing.T) {
 		{name: "weft builds a Pattern of Earths", src: "[[1 2] [3]] | weft 0 | cells | sum", want: "6"},
 		{name: "digit", src: "'7' | digit | otherwise 0", want: "7"},
 		{name: "maxby minby", src: `xs is ["a" "ccc" "bb"]` + "\n(maxby len xs, minby len xs)",
-			want: "(Held ccc, Held a)"},
+			want: `(Held "ccc", Held "a")`},
 		{name: "blocks", src: "Source | blocks | len", in: "a\nb\n\nc\n\n\nd\n", want: "3"},
-		{name: "upper lower", src: `(upper "aB", lower "aB")`, want: "(AB, ab)"},
-		{name: "pad", src: `(padl 4 '0' "7", padr 4 '.' "7")`, want: "(0007, 7...)"},
+		{name: "upper lower", src: `(upper "aB", lower "aB")`, want: `("AB", "ab")`},
+		{name: "pad", src: `(padl 4 '0' "7", padr 4 '.' "7")`, want: `("0007", "7...")`},
 		{name: "starts ends cut", src: `(starts "he" "hello", ends "z" "hello", cutstart "he" "hello", cutend "lo" "hello")`,
-			want: "(Light, Shadow, llo, hel)"},
+			want: `(Light, Shadow, "llo", "hel")`},
 		{name: "replace", src: `replace "l" "L" "hello"`, want: "heLLo"},
 		{name: "ord spark", src: "(ord 'A', spark 66)", want: "(65, B)"},
 		{name: "repeat", src: `repeat 3 "ab"`, want: "ababab"},
@@ -582,8 +591,8 @@ func TestLanguageBehaviour(t *testing.T) {
 		{name: "rounding", src: "(ceil 2.1, floor 2.9, round 2.5, round 2.4)", want: "(3, 2, 3, 2)"},
 		{name: "clamp", src: "(clamp 0 10 42, clamp 0 10 (neg 5), clamp 0 10 7)", want: "(10, 0, 7)"},
 		{name: "pow", src: "(pow 2 10, pow 3 0)", want: "(1024, 1)"},
-		{name: "bitwise", src: "(bor 12 10, band 12 10, bxor 12 10, shl 3 1, shr 1 8, bin 10)",
-			want: "(14, 8, 6, 8, 4, 1010)"},
+		{name: "bitwise", src: "(bor 12 10, band 12 10, bxor 12 10, shl 3 1, shr 1 8, base 2 10)",
+			want: `(14, 8, 6, 8, 4, "1010")`},
 		{name: "mdist", src: "mdist (knot 0 0) (knot 3 4)", want: "7"},
 		{name: "constants", src: "gt 3.0 pi", want: "Light"},
 		{name: "pattern shape and inb", src: "g is Source through pattern\n(shape g, inb g (knot 0 0), inb g (knot 9 9))",
@@ -595,8 +604,8 @@ func TestLanguageBehaviour(t *testing.T) {
 		{name: "mapvals", src: `w is {"a" : 1  "b" : 2}` + "\nmapvals (v : mul v 10) w | vals | sum",
 			want: "30"},
 		{name: "insert and remove", src: "c is circle [1 2]\n(len (insert c 3), len (remove c 1))", want: "(3, 1)"},
-		{name: "renamed verbs still work", src: `(len [1 2], prod [2 3], rev [1 2] | head, flat [[1] [2]] | sum, fires "ab" | len, strip "  x  ", earths "a1b22" | sum, idx 2 [1 2 3])`,
-			want: "(2, 6, Held 2, 3, 2, x, 23, Held 1)"},
+		{name: "renamed verbs still work", src: `(len [1 2], prod [2 3], rev [1 2] | first, flat [[1] [2]] | sum, fires "ab" | len, strip "  x  ", earths "a1b22" | sum, idx 2 [1 2 3])`,
+			want: `(2, 6, Held 2, 3, 2, "x", 23, Held 1)`},
 
 		// Layout.
 		{

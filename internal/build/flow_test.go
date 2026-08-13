@@ -57,6 +57,49 @@ flow ((a, b) : (b, add a b)) (0, 1) | bend fst | take 10
 `,
 			want: "0\n1\n1\n2\n3\n5\n8\n13\n21\n34",
 		},
+		// Every verb that answers from one element and stops is allowed to stop
+		// an endless one. Leaving one out of that list is not a missed
+		// optimisation: the compiler refuses to build the program.
+		{
+			name: "idx stops a flow",
+			src:  "flow (mul 2) 1 | idx 1024\n",
+			want: "Held 10",
+		},
+		{
+			name: "seekidx stops a flow",
+			src:  "flow (mul 2) 1 | seekidx (gt 1000)\n",
+			want: "Held 10",
+		},
+		{
+			name: "has stops a flow",
+			src:  "flow (mul 2) 1 | has 1024\n",
+			want: "Light",
+		},
+		{
+			name: "none stops a flow",
+			src:  "flow (mul 2) 1 | none (gt 1000)\n",
+			want: "Shadow",
+		},
+		{
+			name: "nth stops a flow",
+			src:  "flow (mul 2) 1 | nth 5\n",
+			want: "Held 32",
+		},
+		{
+			name: "second stops a flow",
+			src:  "flow (mul 2) 1 | second\n",
+			want: "Held 2",
+		},
+		{
+			name: "a position counts what got past the stages",
+			src:  "flow (add 1) 1 | sift even | seekidx (gt 10)\n",
+			want: "Held 5",
+		},
+		{
+			name: "idx after a stage",
+			src:  "flow (add 1) 1 | bend (mul 3) | idx 12\n",
+			want: "Held 3",
+		},
 		{
 			name: "a flow over declared values",
 			src: `Dir is North | East | South | West

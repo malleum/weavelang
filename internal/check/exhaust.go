@@ -469,7 +469,13 @@ func (c *checker) checkWardCoverage(w *ast.Ward, subject types.Type) {
 	if !missing {
 		return
 	}
-	c.reportMissing(w.P, "ward", witness)
+	what := "ward"
+	if w.Binding {
+		// Generated for a definition that takes its value apart, so the thing
+		// the reader wrote is the binding, not a ward they have never seen.
+		what = "this binding"
+	}
+	c.reportMissing(w.P, what, witness)
 }
 
 // checkClauseCoverage applies the same analysis to a multi-clause definition,

@@ -140,3 +140,67 @@ total Leaf
     (application
       function: (identifier)
       arguments: (constructor))))
+
+================================================================================
+A binding that takes its value apart
+================================================================================
+
+total p is
+  weave (a, b) is p
+  weave [x, y] is [a, b]
+  add x y
+
+total (1, 2)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    name: (identifier)
+    parameters: (identifier)
+    body: (local_binding
+      pattern: (twine_pattern
+        (identifier)
+        (identifier))
+      value: (identifier))
+    body: (local_binding
+      pattern: (thread_pattern
+        (identifier)
+        (identifier))
+      value: (thread
+        (identifier)
+        (identifier)))
+    body: (application
+      function: (identifier)
+      arguments: (identifier)
+      arguments: (identifier)))
+  (output
+    (application
+      function: (identifier)
+      arguments: (twine
+        (integer)
+        (integer)))))
+
+================================================================================
+A definition that takes its value apart
+================================================================================
+
+(width, height) is (12, 5)
+
+mul width height
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (definition
+    pattern: (twine_pattern
+      (identifier)
+      (identifier))
+    body: (twine
+      (integer)
+      (integer)))
+  (output
+    (application
+      function: (identifier)
+      arguments: (identifier)
+      arguments: (identifier))))
